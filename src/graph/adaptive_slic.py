@@ -131,49 +131,116 @@ class TierBudget(NamedTuple):
     total_budget: int           # sum of all block budgets
 
 
+def continuous_node_budget(
+    complexity: np.ndarray,
+    n_min: int = 8,
+    n_max: int = 64,
+    gamma: float = 1.5,
+) -> np.ndarray:
+    """Continuous power-law node budget allocation.
+
+    N_b = N_min + (N_max - N_min) * H_physics^gamma
+
+    This is the PRIMARY allocation method — the core scientific contribution.
+    Replaces discrete tier thresholds with a smooth, physically-motivated
+    density function. Higher gamma concentrates more nodes in high-complexity
+    terrain.
+
+    Parameters
+    ----------
+    complexity : (grid_h, grid_w) float32 in [0, 1]
+    n_min      : minimum nodes per block (flat terrain)
+    n_max      : maximum nodes per block (extreme hazard)
+    gamma      : power-law exponent (1.0 = linear, >1 = concave, <1 = convex)
+
+    Returns
+    -------
+    budget_map : (grid_h, grid_w) int32
+    """
+    # Clamp complexity to [0, 1] for safety
+    c = np.clip(complexity, 0.0, 1.0)
+    budget = n_min + (n_max - n_min) * np.power(c, gamma)
+    return np.round(budget).astype(np.int32)
+
+
+def _assign_tier_labels(
+    complexity: np.ndarray,
+    flat_threshold: float = DEFAULT_FLAT_THRESHOLD,
+    hazard_threshold: float = DEFAULT_HAZARD_THRESHOLD,
+) -> np.ndarray:
+    """Assign tier labels (for evaluation stratification only).
+
+    Post-hoc tier assignment used for tier-stratified metrics,
+    NOT for node budget allocation.
+    """
+    tier_map = np.full(complexity.shape, TIER_COMPLEX, dtype=np.int32)
+    tier_map[complexity < flat_threshold] = TIER_FLAT
+    tier_map[complexity > hazard_threshold] = TIER_HAZARD
+    return tier_map
+
+
 def assign_tier_budget(
     complexity: np.ndarray,
     flat_threshold: float = DEFAULT_FLAT_THRESHOLD,
     hazard_threshold: float = DEFAULT_HAZARD_THRESHOLD,
+    allocation_mode: str = "continuous",
+    n_min: int = 8,
+    n_max: int = 64,
+    gamma: float = 1.5,
 ) -> TierBudget:
     """Map block complexity to tier assignment and node budget.
 
-    Blueprint §12 Step 2:
-      Flat   (< 0.25):       5 nodes/block
-      Complex (0.25–0.60):  15 nodes/block
-      Hazard (> 0.60):      30–50, scaled linearly from 0.60 to 1.0
+    Supports two allocation modes:
+      - "continuous" (PRIMARY): N_b = N_min + (N_max - N_min) * H^gamma
+        Smooth, physically-motivated density. Core scientific contribution.
+      - "discrete"  (ABLATION): Original 3-tier heuristic from blueprint §12
+        Flat: 5, Complex: 15, Hazard: 30-50 (linear)
+
+    Tier labels are always assigned for evaluation stratification regardless
+    of allocation mode.
 
     Parameters
     ----------
-    complexity : (grid_h, grid_w) float32
-    flat_threshold : float (default 0.25, ablation §20)
+    complexity       : (grid_h, grid_w) float32
+    flat_threshold   : float (default 0.25, ablation §20)
     hazard_threshold : float (default 0.60, ablation §20)
+    allocation_mode  : "continuous" or "discrete"
+    n_min            : min nodes/block for continuous mode (default 8)
+    n_max            : max nodes/block for continuous mode (default 64)
+    gamma            : power-law exponent for continuous mode (default 1.5)
 
     Returns
     -------
     TierBudget with tier_map, budget_map, total_budget
     """
-    tier_map = np.full(complexity.shape, TIER_COMPLEX, dtype=np.int32)
-    budget_map = np.full(complexity.shape, 15, dtype=np.int32)
+    # Tier labels (always computed for stratified evaluation)
+    tier_map = _assign_tier_labels(complexity, flat_threshold, hazard_threshold)
 
-    # Flat tier
-    flat_mask = complexity < flat_threshold
-    tier_map[flat_mask] = TIER_FLAT
-    budget_map[flat_mask] = 5
+    if allocation_mode == "continuous":
+        # --- PRIMARY: Continuous power-law allocation ---
+        budget_map = continuous_node_budget(complexity, n_min, n_max, gamma)
+    elif allocation_mode == "discrete":
+        # --- ABLATION: Original discrete 3-tier system ---
+        budget_map = np.full(complexity.shape, 15, dtype=np.int32)
 
-    # Hazard tier — linear interpolation from 30 at threshold to 50 at 1.0
-    hazard_mask = complexity > hazard_threshold
-    tier_map[hazard_mask] = TIER_HAZARD
+        # Flat tier
+        flat_mask = complexity < flat_threshold
+        budget_map[flat_mask] = 5
 
-    # Linear scale: budget = 30 + (score - 0.60) / (1.0 - 0.60) * (50 - 30)
-    range_denom = max(1.0 - hazard_threshold, 1e-6)
-    hazard_scores = complexity[hazard_mask]
-    linear_budget = HAZARD_NODES_MIN + (
-        (hazard_scores - hazard_threshold) / range_denom
-    ) * (HAZARD_NODES_MAX - HAZARD_NODES_MIN)
-    budget_map[hazard_mask] = np.clip(
-        linear_budget.astype(np.int32), HAZARD_NODES_MIN, HAZARD_NODES_MAX
-    )
+        # Hazard tier — linear interpolation from 30 at threshold to 50 at 1.0
+        hazard_mask = complexity > hazard_threshold
+        range_denom = max(1.0 - hazard_threshold, 1e-6)
+        hazard_scores = complexity[hazard_mask]
+        linear_budget = HAZARD_NODES_MIN + (
+            (hazard_scores - hazard_threshold) / range_denom
+        ) * (HAZARD_NODES_MAX - HAZARD_NODES_MIN)
+        budget_map[hazard_mask] = np.clip(
+            linear_budget.astype(np.int32), HAZARD_NODES_MIN, HAZARD_NODES_MAX
+        )
+    else:
+        raise ValueError(
+            f"allocation_mode must be 'continuous' or 'discrete', got '{allocation_mode}'"
+        )
 
     total_budget = int(budget_map.sum())
 
@@ -252,6 +319,10 @@ def adaptive_slic_segmentation(
     image: np.ndarray,
     flat_threshold: float = DEFAULT_FLAT_THRESHOLD,
     hazard_threshold: float = DEFAULT_HAZARD_THRESHOLD,
+    allocation_mode: str = "continuous",
+    gamma: float = 1.5,
+    n_min: int = 8,
+    n_max: int = 64,
     compactness: float = 10.0,
     sigma: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -271,6 +342,14 @@ def adaptive_slic_segmentation(
         Below this → flat tier (default 0.25).
     hazard_threshold : float
         Above this → hazard tier (default 0.60).
+    allocation_mode : str
+        "continuous" or "discrete".
+    gamma : float
+        Power-law exponent for continuous mode.
+    n_min : int
+        Min nodes per block.
+    n_max : int
+        Max nodes per block.
     compactness : float
         SLIC compactness parameter (higher = more regular shape).
     sigma : float
@@ -296,6 +375,10 @@ def adaptive_slic_segmentation(
         complexity,
         flat_threshold=flat_threshold,
         hazard_threshold=hazard_threshold,
+        allocation_mode=allocation_mode,
+        gamma=gamma,
+        n_min=n_min,
+        n_max=n_max,
     )
     tier_map = tier_result.tier_map
     budget_map = tier_result.budget_map

@@ -180,7 +180,7 @@ def extract_node_features(
         # Feature 11: std pixel intensity (texture variance)
         features[i, 11] = image[mask].std() if areas[i] > 1 else 0.0
 
-        # Feature 12: hazardous flag (H_final > 0.7)
+        # Feature 12: hazardous flag (based on threshold)
         features[i, 12] = 1.0 if features[i, 7] > HAZARD_THRESHOLD else 0.0
 
         # Feature 13: hazardous neighbour count (placeholder — filled by graph_builder)
@@ -215,6 +215,20 @@ def extract_node_features(
         features[:, 0].mean(), features[:, 1].mean(),
         int(features[:, 12].sum()),
     )
+
+    # --- Phase 8: Feature Normalization (Z-score) ---
+    # We want to normalize physics and image features across the graph
+    # to stabilize GNN training. Features 0, 1, 9, 12 are already 0-1.
+    # We don't normalize 13 yet because it's computed later.
+    features_to_normalize = [2, 3, 4, 5, 6, 7, 8, 10, 11]
+    for f_idx in features_to_normalize:
+        feat_col = features[:, f_idx]
+        f_mean = feat_col.mean()
+        f_std = feat_col.std()
+        if f_std > 1e-6:
+            features[:, f_idx] = (feat_col - f_mean) / f_std
+        else:
+            features[:, f_idx] = feat_col - f_mean # Center if zero variance
 
     return {
         "features":         features,            # (N, 14) float32

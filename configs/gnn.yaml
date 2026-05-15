@@ -4,9 +4,15 @@
 
 # --- Stage 5: Adaptive Graph Construction ---
 graph:
-  # Tier thresholds (blueprint §12 Step 2, ablation §20)
-  flat_threshold: 0.25         # Below this → flat tier (5 nodes/block)
-  hazard_threshold: 0.60       # Above this → hazard tier (30-50 nodes/block)
+  # Allocation mode (blueprint §12 / publication upgrade)
+  allocation_mode: "continuous" # "continuous" (primary) or "discrete" (ablation)
+  gamma: 1.5                   # Power-law exponent for continuous mode
+  n_min: 8                     # Min nodes per block for continuous mode
+  n_max: 64                    # Max nodes per block for continuous mode
+
+  # Tier thresholds (used for discrete mode and evaluation stratification)
+  flat_threshold: 0.25         # Below this → flat tier
+  hazard_threshold: 0.60       # Above this → hazard tier
 
   # SLIC parameters
   compactness: 10.0            # SLIC compactness (higher = more regular shape)

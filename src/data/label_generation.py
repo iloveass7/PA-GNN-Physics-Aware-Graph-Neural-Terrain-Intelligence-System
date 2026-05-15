@@ -16,7 +16,7 @@ Usage:
 
     dataset = build_dataset(split="train", splits_dir=..., tiles_dir=...)
     sample  = dataset[0]
-    # sample["image"]   → (3, 512, 512) float32 CNN input
+    # sample["image"]   → (1, 512, 512) float32 CNN input
     # sample["risk"]    → (512, 512)    float32 training label
     # sample["hazard"]  → (512, 512)    float32 evaluation mask
     # sample["valid"]   → (512, 512)    float32 loss validity mask
@@ -85,11 +85,11 @@ class TilePair(Dataset):
 
         image, risk, hazard, valid = self.augment(image, risk, hazard, valid)
 
-        # Replicate grayscale → 3-channel for MobileNetV3
-        image_3ch = image.unsqueeze(0).expand(3, -1, -1)  # (3, H, W)
+        # Single-channel output (1, H, W)
+        image_1ch = image.unsqueeze(0)  # (1, H, W)
 
         return {
-            "image":   image_3ch,           # (3, 512, 512) float32
+            "image":   image_1ch,            # (1, 512, 512) float32
             "risk":    risk,                # (512, 512)    float32 — training label
             "hazard":  hazard,              # (512, 512)    float32 — eval mask
             "valid":   valid,               # (512, 512)    float32 — loss mask

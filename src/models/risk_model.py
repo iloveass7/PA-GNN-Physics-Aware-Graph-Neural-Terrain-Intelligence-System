@@ -31,6 +31,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
 
+from src.models.encoder import adapt_first_conv
+
 log = logging.getLogger(__name__)
 
 
@@ -216,7 +218,7 @@ class RiskEstimator(nn.Module):
     """Stage 3 CNN Semantic Risk Estimator.
 
     MobileNetV3-Large backbone + DeepLabV3+ decoder.
-    Input:  (B, 3, 512, 512)
+    Input:  (B, 1, 512, 512)
     Output: (B, 1, 512, 512) — H_learned ∈ [0, 1]
 
     Parameters
@@ -235,6 +237,9 @@ class RiskEstimator(nn.Module):
 
         # Keep the feature extraction layers only (drop classifier)
         self.features = backbone.features
+
+        # Adapt first conv from 3-channel → 1-channel via weight averaging
+        adapt_first_conv(backbone, in_channels=1)
 
         # Detect channel dimensions at stride-4 and stride-32
         # MobileNetV3-Large:
@@ -266,7 +271,7 @@ class RiskEstimator(nn.Module):
         """
         Parameters
         ----------
-        x : (B, 3, 512, 512) float32 in [0, 1]
+        x : (B, 1, 512, 512) float32 in [0, 1]
 
         Returns
         -------

@@ -76,10 +76,14 @@ class MCDropoutEstimator:
         model: nn.Module,
         n_passes: int = 5,
         device: torch.device | None = None,
+        calibrator: nn.Module | None = None,
+        max_time_ms: float = 100.0,
     ):
         self.model = model
         self.n_passes = n_passes
         self.device = device or next(model.parameters()).device
+        self.calibrator = calibrator
+        self.max_time_ms = max_time_ms
 
     @torch.no_grad()
     def estimate_node_uncertainty(
@@ -104,21 +108,48 @@ class MCDropoutEstimator:
 
         predictions = []
 
-        with mc_dropout_mode(self.model):
-            for _ in range(self.n_passes):
-                pred = self.model(x, edge_index)  # (N,)
-                predictions.append(pred)
+        import time
+        from src.utils.profiler import CUDATimer
+        
+        start_time = time.time()
+        timer = CUDATimer(device=self.device)
+        
+        with timer:
+            with mc_dropout_mode(self.model):
+                for i in range(self.n_passes):
+                    # Auto-fallback: if we are running out of time, stop early
+                    elapsed_ms = (time.time() - start_time) * 1000.0
+                    if i >= 3 and elapsed_ms > self.max_time_ms:
+                        import logging
+                        logging.getLogger(__name__).warning("MC Dropout auto-fallback: stopped at pass %d due to time limit (%.1fms)", i, elapsed_ms)
+                        break
+                        
+                    pred = self.model(x, edge_index)  # (N,)
+                    
+                    # Apply temperature scaling if available
+                    if self.calibrator is not None:
+                        # model outputs probs after sigmoid, we need logits for temperature scaling
+                        # but TemperatureScaling expects logits. If model outputs probs, we can't easily invert if it's 0 or 1.
+                        # Wait, PhysicsAwareGNN outputs probabilities (sigmoid is inside the head).
+                        # Actually, if we apply temperature scaling, it's better to do it inside the model or pass logits.
+                        # For post-hoc, if model outputs probs, we can just invert it:
+                        logits = torch.log(pred.clamp(1e-7, 1-1e-7) / (1 - pred.clamp(1e-7, 1-1e-7)))
+                        pred = self.calibrator(logits)
+                        
+                    predictions.append(pred)
 
         # Stack: (n_passes, N)
-        all_preds = torch.stack(predictions, dim=0)
+        stacked = torch.stack(predictions, dim=0)
 
-        risk_mean = all_preds.mean(dim=0)   # (N,)
-        risk_var = all_preds.var(dim=0)     # (N,)
+        # Compute stats
+        mean_pred = stacked.mean(dim=0)
+        var_pred = stacked.var(dim=0, unbiased=True) if len(predictions) > 1 else torch.zeros_like(mean_pred)
 
         return {
-            "risk_mean": risk_mean.cpu(),
-            "risk_var": risk_var.cpu(),
-            "all_preds": all_preds.cpu(),
+            "risk_mean": mean_pred.cpu(),
+            "risk_var": var_pred.cpu(),
+            "all_preds": stacked.cpu(),
+            "latency_ms": timer.get_elapsed_ms()
         }
 
     @torch.no_grad()

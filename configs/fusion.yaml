@@ -42,6 +42,7 @@ loss:
   hazard_weight: 3.0
   dice_coeff: 0.5
   tv_coeff: 0.1
+  alpha_reg_beta: 0.01             # Alpha diversity regularization: L_alpha = beta * mean(alpha*(1-alpha))
 
 # --- DataLoader ---
 dataloader:

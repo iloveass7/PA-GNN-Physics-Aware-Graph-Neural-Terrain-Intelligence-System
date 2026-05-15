@@ -120,8 +120,14 @@ def build_graph(
     K: int = 5,
     flat_threshold: float = 0.25,
     hazard_threshold: float = 0.60,
+    allocation_mode: str = "continuous",
+    gamma: float = 1.5,
+    n_min: int = 8,
+    n_max: int = 64,
     compactness: float = 10.0,
     sigma: float = 1.0,
+    edge_mode: str = "static",
+    edge_scorer: torch.nn.Module | None = None,
 ) -> "PyGData":
     """Build a complete PyG Data object from a single tile.
 
@@ -174,6 +180,10 @@ def build_graph(
         h_physics, image,
         flat_threshold=flat_threshold,
         hazard_threshold=hazard_threshold,
+        allocation_mode=allocation_mode,
+        gamma=gamma,
+        n_min=n_min,
+        n_max=n_max,
         compactness=compactness,
         sigma=sigma,
     )
@@ -207,6 +217,8 @@ def build_graph(
         centroids=centroids,
         labels=labels,
         K=K,
+        mode=edge_mode,
+        scorer=edge_scorer,
     )
 
     # --- Fill feature 13: hazardous neighbour count ---
@@ -335,10 +347,9 @@ def build_graph_from_npy(
         h_final   = np.load(h_final_path).astype(np.float32)
         alpha     = np.load(alpha_path).astype(np.float32)
     elif fusion_model is not None:
-        x = th.from_numpy(image).unsqueeze(0)
-        x_3ch = x.expand(1, 3, -1, -1).to(device)
+        x = th.from_numpy(image).unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, H, W)
         with th.no_grad():
-            result = fusion_model(x_3ch)
+            result = fusion_model(x)
         h_learned = result["h_learned"][0, 0].cpu().numpy()
         h_final   = result["h_final"][0, 0].cpu().numpy()
         alpha     = result["alpha"][0, 0].cpu().numpy()
@@ -360,6 +371,12 @@ def build_graph_from_npy(
         K=K,
         flat_threshold=flat_threshold,
         hazard_threshold=hazard_threshold,
+        allocation_mode=allocation_mode,
+        gamma=gamma,
+        n_min=n_min,
+        n_max=n_max,
+        edge_mode=edge_mode,
+        edge_scorer=edge_scorer,
     )
 
 

@@ -205,11 +205,10 @@ def precompute_graphs(
                 risk_target = np.load(str(risk_npy)).astype(np.float32)
 
             # Run fusion model to get all maps
-            x = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(device)
-            x_3ch = x.expand(1, 3, -1, -1)  # (1, 3, H, W)
+            x = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(device) # (1, 1, H, W)
 
             with torch.no_grad():
-                result = model(x_3ch)
+                result = model(x)
                 _, feats = physics_engine(x)
 
             h_physics = result["h_physics"][0, 0].cpu().numpy()
@@ -234,6 +233,11 @@ def precompute_graphs(
                 K=K,
                 flat_threshold=flat_threshold,
                 hazard_threshold=hazard_threshold,
+                allocation_mode=gnn_config.get("graph", {}).get("allocation_mode", "continuous"),
+                gamma=gnn_config.get("graph", {}).get("gamma", 1.5),
+                n_min=gnn_config.get("graph", {}).get("n_min", 8),
+                n_max=gnn_config.get("graph", {}).get("n_max", 64),
+                compactness=compactness,
             )
 
             # Validate
