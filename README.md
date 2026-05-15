@@ -76,7 +76,7 @@ pa-gnn/
 ### 1. Installation
 Clone the repository and set up the environment:
 ```bash
-git clone https://github.com/your-username/PA-GNN.git
+git clone https://github.com/iloveass7/PA-GNN-Physics-Aware-Graph-Neural-Terrain-Intelligence-System.git
 cd PA-GNN
 pip install -r requirements.txt
 ```
