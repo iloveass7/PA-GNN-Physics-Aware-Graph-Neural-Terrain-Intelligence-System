@@ -60,12 +60,21 @@ This document tracks the progression and implementation status of the PA-GNN (Ph
     *   `configs/fusion.yaml`: Training config (AdamW, lr=1e-4, 40 epochs, patience 10), `joint_with_cnn: false` (mandatory), same compound loss as Stage 3, α diagnostic thresholds.
     *   `scripts/train_fusion.py`: Training runner with custom `train_one_epoch_fusion()` and `validate_one_epoch_fusion()` (tracks H_final recall vs H_learned/H_physics recall), 6-column visualisation (Image | Target | H_physics | H_learned | α | H_final), α-map degeneration diagnostic, early stopping, resume support.
 
-## Stage 5: Adaptive-Resolution Superpixel Graph — 🔴 **PENDING**
-*   **Goal:** Build a hierarchical SLIC graph where node density is controlled by $H_{physics}$.
-*   **Requirements:**
-    *   Adaptive block logic (flat=5, complex=15, hazard=30-50 nodes).
-    *   14-dimensional node feature vectors.
-    *   Distance/Cosine edge connections.
+## Stage 5: Adaptive-Resolution Superpixel Graph — 🟢 **COMPLETE**
+*   **Goal:** Build a terrain-complexity-adaptive superpixel graph where node density is driven by $H_{physics}$.
+*   **Architecture:** Hierarchical two-pass SLIC + physics-KNN edges (K=5) + 14-dim node features → PyG Data objects.
+*   **Node budget:** Flat (<0.25): 5/block, Complex (0.25–0.60): 15/block, Hazard (>0.60): 30–50/block (linear).
+*   **Expected nodes:** 120–200 (flat tiles), 300–350 (average), 450–700+ (hazardous tiles).
+*   **Outputs:** Precomputed PyG `.pt` graph files (`data/processed/graphs/`), graph statistics CSV.
+*   **Files Implemented:**
+    *   `src/graph/__init__.py`: Package init with module documentation.
+    *   `src/graph/adaptive_slic.py`: `compute_terrain_complexity()` (16×16 block means), `assign_tier_budget()` (3-tier allocation), `adaptive_slic_segmentation()` (two-pass SLIC with hazard refinement + connectivity guarantee).
+    *   `src/graph/node_features.py`: `extract_node_features()` — 14-dim feature vector per superpixel (centroid, slope/roughness/disc, H_physics/H_learned/H_final/α, area, intensity stats, hazard flag, neighbour count placeholder).
+    *   `src/graph/edges.py`: `build_physics_knn_edges()` (KDTree KNN in combined spatial+physics space + RAG connectivity guarantee), `compute_edge_weights()` (blueprint formula: 0.6×avg_risk + 0.25×norm_dist + 0.15×slope_diff), `build_rag_edges()` (pixel-boundary adjacency fallback).
+    *   `src/graph/graph_builder.py`: `build_graph()` orchestrator (SLIC → features → KNN → weights → hazard neighbour count → PyG Data), `build_graph_from_npy()` (file-based entry point), `validate_graph()` (8-point integrity check).
+    *   `src/data/graph_dataset.py`: `PrecomputedGraphDataset` (lazy .pt loader), `build_graph_datasets()` factory.
+    *   `configs/gnn.yaml`: Graph construction parameters + Stage 6 GATv2 architecture config.
+    *   `scripts/precompute_graphs.py`: Full Phase 3a precomputation script (Stage 2→3→4→5 per tile, validation, statistics, bridging frequency monitoring).
 
 ## Stage 6: Physics-Aware GATv2 with FFN Module — 🟢 **COMPLETE**
 *   **Goal:** Predict node safety states using physics-aware attention message passing.
