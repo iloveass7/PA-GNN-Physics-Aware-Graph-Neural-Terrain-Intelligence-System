@@ -1,0 +1,68 @@
+# configs/gnn.yaml
+# Stage 6 — Physics-Aware GATv2 + FFN configuration
+# All values match blueprint §13 exactly.
+
+# --- Model architecture ---
+model:
+  in_features: 14              # 14-dim node feature vector (blueprint §12)
+  hidden_dim: 32               # GATv2 output per head
+  heads: 4                     # Attention heads per layer
+  physics_lambda_init: 0.1     # Initial λ for physics-aware attention
+  dropout_l1: 0.3              # Dropout after GATv2 layer 1
+  dropout_l2: 0.2              # Dropout after GATv2 layer 2
+  ffn_dropout: 0.1             # Dropout inside FFN diversity blocks
+
+# --- Training ---
+training:
+  optimizer: "Adam"
+  lr: 1.0e-3                   # Blueprint: 1e-3
+  weight_decay: 5.0e-4         # Blueprint: 5e-4
+  lr_schedule: "none"          # No LR schedule (fixed LR)
+  batch_size: 32               # Precomputed graphs per batch
+  max_epochs: 100              # Blueprint: 100
+  loss: "SmoothL1"             # Huber loss — robust to outlier nodes
+  grad_clip: 1.0               # Max gradient norm
+
+# --- Early stopping ---
+early_stopping:
+  patience: 15                 # Blueprint: patience 15
+  monitor: "val_MAE"           # Blueprint: monitor val_MAE
+  mode: "min"                  # Lower MAE = better
+
+# --- Data paths ---
+data:
+  graph_dir: "data/processed/graphs"  # Precomputed PyG .pt files
+  splits:
+    train: "train"
+    val: "val"
+    test_in: "test_in"
+    test_ood: "test_ood"
+
+# --- Checkpointing ---
+checkpoints:
+  save_dir: "checkpoints"
+  best_name: "gnn_best.pt"
+  periodic_every: 10
+  periodic_name: "gnn_epoch_{epoch:04d}.pt"
+
+# --- Logging ---
+logging:
+  results_dir: "results/stage6"
+  log_csv: "results/stage6/gnn_train_log.csv"
+  loss_curve_name: "gnn_loss_curve.png"
+
+# --- Uncertainty (Stage 7 / blueprint §14) ---
+uncertainty:
+  mc_passes: 5                 # N forward passes for MC dropout
+  mc_fallback: 3               # Reduced passes if inference >5s
+  uncertainty_threshold: 0.3   # U_i > threshold → inflate edge costs
+
+# --- Path planning (Stage 8 / blueprint §15) ---
+planning:
+  risk_weight: 0.6             # Edge cost: risk component weight
+  dist_weight: 0.25            # Edge cost: distance component weight
+  slope_weight: 0.15           # Edge cost: slope discontinuity weight
+  risk_exp_scale: 3.0          # exp(scale × risk) multiplier
+  uncertainty_penalty: 2.0     # Cost multiplier: (1 + penalty × U_i)
+  heuristic_risk_weight: 0.4   # h(n) risk term coefficient
+  heuristic_slope_weight: 0.1  # h(n) slope term coefficient

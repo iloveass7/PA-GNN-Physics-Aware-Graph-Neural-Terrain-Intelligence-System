@@ -64,14 +64,26 @@ This document tracks the progression and implementation status of the PA-GNN (Ph
     *   14-dimensional node feature vectors.
     *   Distance/Cosine edge connections.
 
-## Stage 6: Graph Neural Network (GATv2) — 🔴 **PENDING**
-*   **Goal:** Predict node safety states using message passing.
-*   **Requirements:**
-    *   GATv2 architecture with 4 attention heads.
-    *   Weakly-supervised label generation (10% subset supervision).
+## Stage 6: Physics-Aware GATv2 with FFN Module — 🟢 **COMPLETE**
+*   **Goal:** Predict node safety states using physics-aware attention message passing.
+*   **Outputs:** Trained GATv2+FFN checkpoint (`checkpoints/gnn_best.pt`).
+*   **Files Implemented:**
+    *   `src/models/gatv2_physics.py`: Custom `PhysicsAwareGATv2Conv` — physics similarity injected into attention logit before softmax ($\lambda \times \exp(-|\Delta S| - |\Delta R|)$), learnable $\lambda$ initialised to 0.1.
+    *   `src/models/gnn_model.py`: Full `PhysicsAwareGNN` assembly — 2-layer GATv2 (4 heads) + `GNNFFNBlock` (BatchNorm1d + GELU + residual) + sigmoid head.
+    *   `configs/gnn.yaml`: Blueprint §13 hyperparameters (Adam 1e-3, SmoothL1, patience 15, batch 32).
+    *   `scripts/train_gnn.py`: Full training orchestration with PyG DataLoader, early stopping, AUC-ROC, CSV logging.
 
-## Stage 7: Path Planning (A*) — 🔴 **PENDING**
-*   **Goal:** Route over the GNN-classified graph avoiding hazards.
-*   **Requirements:**
-    *   Physics-aware cost function ($w_{dist} + w_{risk}$).
-    *   Interpolation/smoothing back to image space.
+
+## Stage 7: Uncertainty Estimation (MC Dropout) — 🟢 **COMPLETE**
+*   **Goal:** Produce epistemic uncertainty map $U(x,y)$ expressing where the model lacks confidence. High uncertainty triggers conservative routing.
+*   **Outputs:** Per-node `risk_mean` + `risk_var`; pixel-space $U(x,y) \in [0,1]^{512 \times 512}$.
+*   **Files Implemented:**
+    *   `src/uncertainty/mc_dropout.py`: `MCDropoutEstimator` with `mc_dropout_mode` context manager — Dropout layers set to train mode, BatchNorm1d stays in eval mode. N=5 MC passes, per-node variance, vectorised pixel projection via `pixel_membership`.
+
+## Stage 8: Path Planning (A* + D*) — 🟢 **COMPLETE**
+*   **Goal:** Route over the GNN-classified graph avoiding hazards with uncertainty-informed costs.
+*   **Outputs:** Planned trajectories with per-waypoint risk attribution, PLR, and HCR metrics.
+*   **Files Implemented:**
+    *   `src/planning/astar.py`: `PhysicsAwareAStar` — $C(i,j) = \exp(3 \times risk_{ij}) \times [0.6 \times risk + 0.25 \times dist + 0.15 \times |\Delta S|]$, uncertainty penalty $(1 + 2U_i)$ when $U_i > 0.3$, no hard node deactivation. Returns `Trajectory` with per-waypoint `dominant_signal` attribution ("physics"/"cnn").
+    *   `src/planning/heuristics.py`: Physics-aware $h(n) = d(n, goal) \times (1 + 0.4 \hat{p}_n + 0.1 S_n)$ and baseline Euclidean heuristic for B1.
+    *   `src/planning/dstar.py`: `DStarLite` incremental replanner for dynamic edge cost updates during active traversal.
