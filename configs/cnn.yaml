@@ -1,0 +1,58 @@
+# configs/cnn.yaml
+# Stage 3 — CNN Semantic Risk Estimator configuration
+# All values match blueprint §10 exactly.
+
+# --- Model ---
+model:
+  pretrained_imagenet: false       # Use MAE init (blueprint requirement)
+  mae_checkpoint: "checkpoints/mae_best.pt"  # Path relative to project root
+
+# --- Training ---
+training:
+  optimizer: "AdamW"
+  lr: 1.0e-4                       # Learning rate
+  weight_decay: 1.0e-4             # Weight decay
+  lr_schedule: "cosine"            # CosineAnnealingLR
+  batch_size: 8                    # Blueprint: 8
+  max_epochs: 60                   # Blueprint: 60
+  grad_clip: 1.0                   # Max gradient norm
+  use_amp: true                    # Mixed precision (GPU only)
+
+# --- Early stopping ---
+early_stopping:
+  patience: 10                     # Blueprint: patience 10
+  monitor: "val_hazard_recall"     # Blueprint: monitor val_hazard_recall
+  mode: "max"                      # Higher recall = better
+
+# --- Loss (matches blueprint §10 exactly) ---
+loss:
+  hazard_threshold: 0.7            # Target > 0.7 → hazardous pixel
+  hazard_weight: 3.0               # BCE weight for hazardous pixels
+  dice_coeff: 0.5                  # L = L_BCE + 0.5·L_Dice + 0.1·L_TV
+  tv_coeff: 0.1
+
+# --- DataLoader ---
+dataloader:
+  num_workers: 4
+  pin_memory: true
+
+# --- Checkpointing ---
+checkpoints:
+  save_dir: "checkpoints"
+  best_name: "cnn_best.pt"        # Saved when val_hazard_recall improves
+  periodic_every: 5               # Save full checkpoint every N epochs
+  periodic_name: "cnn_epoch_{epoch:04d}.pt"
+
+# --- Logging ---
+logging:
+  results_dir: "results/stage3"
+  loss_curve_name: "cnn_loss_curve.png"
+  prediction_samples: 5           # Tiles to visualise at end of training
+  log_csv: "data/processed/cnn_train_log.csv"
+
+# --- Ablation variants (used by run_ablations.py) ---
+ablation:
+  init_modes:
+    - "mae"           # Proposed: MAE pretrained (Stage 0)
+    - "imagenet"      # Baseline: ImageNet pretrained
+    - "random"        # Baseline: Random initialisation
