@@ -1,0 +1,70 @@
+# configs/fusion.yaml
+# Stage 4 — Spatial Adaptive Fusion configuration
+# All values match blueprint §11 exactly.
+
+# --- Frozen CNN (MANDATORY for fusion training) ---
+# Blueprint §11: "Training jointly without freezing produces degenerate α maps
+# where the CNN learns to be intentionally incorrect because the fusion will
+# compensate."
+joint_with_cnn: false              # MUST be false — blueprint requirement
+
+# --- CNN checkpoint (from Stage 3) ---
+cnn_checkpoint: "checkpoints/cnn_best.pt"
+
+# --- Physics engine weights (same as Stage 2 defaults) ---
+physics:
+  w1: 0.4                          # Slope weight
+  w2: 0.3                          # Roughness weight
+  w3: 0.3                          # Discontinuity weight
+
+# --- Training ---
+training:
+  optimizer: "AdamW"
+  lr: 1.0e-4                       # Learning rate for fusion network
+  weight_decay: 1.0e-4             # Weight decay
+  lr_schedule: "cosine"            # CosineAnnealingLR
+  batch_size: 8                    # Same as Stage 3
+  max_epochs: 40                   # Blueprint Phase 2: ~40 epochs
+  grad_clip: 1.0                   # Max gradient norm
+  use_amp: true                    # Mixed precision (GPU only)
+
+# --- Early stopping ---
+early_stopping:
+  patience: 10                     # Stop if no improvement for 10 epochs
+  monitor: "val_hazard_recall"     # Must exceed H_learned recall alone
+  mode: "max"                      # Higher recall = better
+
+# --- Loss (same compound loss as Stage 3) ---
+# Blueprint §11: "Loss applied to H_final against DEM-derived labels
+# using the same compound loss as Stage 3."
+loss:
+  hazard_threshold: 0.7
+  hazard_weight: 3.0
+  dice_coeff: 0.5
+  tv_coeff: 0.1
+
+# --- DataLoader ---
+dataloader:
+  num_workers: 4
+  pin_memory: true
+
+# --- Checkpointing ---
+checkpoints:
+  save_dir: "checkpoints"
+  best_name: "fusion_best.pt"      # Saved when val_hazard_recall improves
+  periodic_every: 5                # Save full checkpoint every N epochs
+  periodic_name: "fusion_epoch_{epoch:04d}.pt"
+
+# --- Logging ---
+logging:
+  results_dir: "results/stage4"
+  loss_curve_name: "fusion_loss_curve.png"
+  prediction_samples: 5
+  log_csv: "data/processed/fusion_train_log.csv"
+
+# --- Diagnostic ---
+# Blueprint §11: "If the α map shows no spatial structure, fusion training
+# has degenerated."
+diagnostic:
+  alpha_std_threshold: 0.02        # Warn if std(α) < this across a batch
+  log_alpha_stats_every: 5         # Log α statistics every N epochs
