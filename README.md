@@ -35,7 +35,6 @@ By fusing **explicit physical measurements** (derived from stereo elevation mode
 
 ## 🏗️ System Architecture
 
-*(Place your final architecture figure here in `results/figures/architecture.png` once generated!)*
 
 The pipeline executes through 8 core stages:
 1. **Pretraining:** MAE self-supervised learning on orbital imagery.
