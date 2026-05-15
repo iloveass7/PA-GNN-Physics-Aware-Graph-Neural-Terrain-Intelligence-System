@@ -1,0 +1,50 @@
+# configs/mae.yaml
+# Stage 0 — MAE Self-Supervised Pretraining configuration.
+# Blueprint §7 (MAE Self-Supervised Pretraining).
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+model:
+  patch_size: 16                      # §7: 16×16 patches → 1024 patches per 512×512 tile
+  mask_ratio: 0.75                    # §7: 75% of patches masked per forward pass
+  encoder_name: "mobilenetv3_large"   # §7: MobileNetV3-Large adapted with patch embedding stem
+  decoder_layers: 4                   # §7: lightweight 4-layer MLP reconstruction head
+  embed_dim: 960                      # MobileNetV3-Large final feature dim
+
+# ── Training ──────────────────────────────────────────────────────────────────
+training:
+  optimizer: "AdamW"
+  lr: 1.5e-4                          # §7: 1.5×10⁻⁴
+  weight_decay: 0.05                  # §7: 0.05
+  lr_schedule: "cosine"               # §7: cosine annealing
+  batch_size: 64                      # §7: batch size 64
+  max_epochs: 200                     # §7: 200 epochs
+  grad_clip: 1.0
+  use_amp: true                       # Mixed precision for RTX 3060 Ti
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+data:
+  ctx_dir: "data/processed/ctx_pretrain"  # §7: 17,298 CTX tiles
+  image_size: 512
+  num_workers: 4
+  pin_memory: true
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+checkpoints:
+  save_dir: "checkpoints"
+  best_name: "mae_best.pt"            # Best by reconstruction loss
+  encoder_name: "mae_encoder.pth"     # Encoder-only export (used by CNN)
+  periodic_every: 10                  # Save full checkpoint every N epochs
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  results_dir: "results/stage0"
+  loss_curve_name: "mae_loss_curve.png"
+  reconstruction_samples: 5           # §7: inspect 5 reconstructed tiles
+  log_csv: "results/stage0/mae_train_log.csv"
+
+# ── Verification targets ───────────────────────────────────────────────────────
+# §7: reconstruction loss should decrease over 200 epochs.
+# Expected training time: 8–12 hours on RTX 3060 Ti.
+verification:
+  expected_loss_decrease: true
+  qualitative_inspection_tiles: 5
