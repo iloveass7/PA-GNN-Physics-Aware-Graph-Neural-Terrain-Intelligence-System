@@ -50,12 +50,15 @@ This document tracks the progression and implementation status of the PA-GNN (Ph
     *   `configs/cnn.yaml`: Blueprint hyperparameter definitions (batch 8, 60 epochs).
     *   `scripts/train_cnn.py`: Full training orchestration with early stopping and ablation modes.
 
-## Stage 4: Spatial Adaptive Fusion — 🔴 **PENDING**
-*   **Goal:** Learn a per-pixel $\alpha(x,y)$ mask to dynamically fuse $H_{physics}$ and $H_{learned}$.
-*   **Requirements:**
-    *   Freeze Stage 3 CNN backbone.
-    *   Small 3-layer CNN for $\alpha(x,y)$ prediction.
-    *   Compound loss on final output $H_{final}$.
+## Stage 4: Spatial Adaptive Fusion — 🟢 **COMPLETE**
+*   **Goal:** Learn a per-pixel $\alpha(x,y)$ mask to dynamically fuse $H_{physics}$ and $H_{learned}$ into $H_{final}$.
+*   **Architecture:** 3-layer CNN (Conv(3→16,3×3) → Conv(16→8,3×3) → Conv(8→1,1×1)) with reflect padding and Sigmoid output.
+*   **Fusion formula:** $H_{final} = \alpha \cdot H_{learned} + (1-\alpha) \cdot H_{physics}$
+*   **Outputs:** Trained fusion checkpoint (`checkpoints/fusion_best.pt`), $\alpha$ maps, $H_{final}$ maps.
+*   **Files Implemented:**
+    *   `src/models/fusion.py`: `AdaptiveFusion` (3-layer α-prediction CNN, ~1.6K params), `EndToEndFusionModel` (CNN + physics + fusion wrapper with frozen-CNN mode), `fuse_risk_maps()`, `static_fusion()` (B5 baseline), `build_fusion_model()` factory.
+    *   `configs/fusion.yaml`: Training config (AdamW, lr=1e-4, 40 epochs, patience 10), `joint_with_cnn: false` (mandatory), same compound loss as Stage 3, α diagnostic thresholds.
+    *   `scripts/train_fusion.py`: Training runner with custom `train_one_epoch_fusion()` and `validate_one_epoch_fusion()` (tracks H_final recall vs H_learned/H_physics recall), 6-column visualisation (Image | Target | H_physics | H_learned | α | H_final), α-map degeneration diagnostic, early stopping, resume support.
 
 ## Stage 5: Adaptive-Resolution Superpixel Graph — 🔴 **PENDING**
 *   **Goal:** Build a hierarchical SLIC graph where node density is controlled by $H_{physics}$.
