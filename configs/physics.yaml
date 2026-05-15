@@ -1,0 +1,25 @@
+# configs/physics.yaml
+# Stage 2 — Physics Feature Engine configuration
+#
+# Blueprint §9 default weights: w1=0.4, w2=0.3, w3=0.3
+# Tune via grid search in scripts/run_ablations.py.
+#
+# H_physics = w1 × S + w2 × R + w3 × D
+# Constraint: w1 + w2 + w3 must equal 1.0
+
+# --- Combination weights (initial values, tunable) ---
+w1: 0.4          # slope proxy weight
+w2: 0.3          # roughness proxy weight
+w3: 0.3          # discontinuity proxy weight
+
+# --- Feature extractor hyperparameters (fixed, not tuned) ---
+sigma: 2.0        # LoG sigma for DiscontinuityProxy (13×13 kernel at σ=2)
+window_size: 7    # Roughness sliding window size (7×7)
+eps: 1.0e-8       # Normalisation epsilon (prevents division by zero)
+
+# --- Ablation grid search space (used by run_ablations.py) ---
+# Only w1, w2, w3 are searched. Step size 0.1.
+# Total combinations: ~55 (simplex grid on [0,1]³ with w1+w2+w3=1.0)
+ablation:
+  w_step: 0.1
+  metric: "val_hazard_recall"    # optimisation target (from Stage 3 CNN output)
