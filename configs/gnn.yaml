@@ -86,6 +86,7 @@ checkpoints:
 dataloader:
   num_workers: 4
   pin_memory: true
+  periodic_name: "gnn_epoch_{epoch:04d}.pt"
 
 # --- Logging ---
 logging:
@@ -97,3 +98,21 @@ precomputed:
   graphs_dir: "data/processed/graphs"
   # Storage estimate (blueprint §12):
   # ~320 nodes average × ~1.2 GB for 10,000 graphs
+  log_csv: "results/stage6/gnn_train_log.csv"
+  loss_curve_name: "gnn_loss_curve.png"
+
+# --- Uncertainty (Stage 7 / blueprint §14) ---
+uncertainty:
+  mc_passes: 5                 # N forward passes for MC dropout
+  mc_fallback: 3               # Reduced passes if inference >5s
+  uncertainty_threshold: 0.3   # U_i > threshold → inflate edge costs
+
+# --- Path planning (Stage 8 / blueprint §15) ---
+planning:
+  risk_weight: 0.6             # Edge cost: risk component weight
+  dist_weight: 0.25            # Edge cost: distance component weight
+  slope_weight: 0.15           # Edge cost: slope discontinuity weight
+  risk_exp_scale: 3.0          # exp(scale × risk) multiplier
+  uncertainty_penalty: 2.0     # Cost multiplier: (1 + penalty × U_i)
+  heuristic_risk_weight: 0.4   # h(n) risk term coefficient
+  heuristic_slope_weight: 0.1  # h(n) slope term coefficient
