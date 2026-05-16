@@ -43,6 +43,7 @@ from collections import deque
 
 import numpy as np
 from scipy.spatial import cKDTree
+import torch
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +140,8 @@ def build_physics_knn_edges(
     K: int = 5,
     spatial_weight: float = 0.5,
     physics_weight: float = 0.5,
+    mode: str = "static",
+    scorer: torch.nn.Module | None = None,
 ) -> tuple[np.ndarray, bool]:
     """Build physics-similarity KNN edges with connectivity guarantee.
 
@@ -158,6 +161,10 @@ def build_physics_knn_edges(
         Weight for spatial distance (default: 0.5).
     physics_weight : float
         Weight for physics distance (default: 0.5).
+    mode : str
+        "static" (heuristic) or "learned" (MLP scorer).
+    scorer : torch.nn.Module | None
+        EdgeAffinityMLP instance (required if mode="learned").
 
     Returns
     -------
@@ -194,29 +201,76 @@ def build_physics_knn_edges(
     else:
         physics_vec_norm = physics_vec
 
-    # --- Combined distance for KNN ---
-    # Concatenate scaled spatial + physics into a single vector for KDTree
-    # We scale each by its weight so Euclidean distance in joint space
-    # approximates: weight_s * d_spatial + weight_p * d_physics
-    spatial_scaled = centroids_norm * np.sqrt(spatial_weight)
-    physics_scaled = physics_vec_norm * np.sqrt(physics_weight)
-    combined_vec = np.hstack([spatial_scaled, physics_scaled])  # (N, 6)
+    if mode == "learned" and scorer is not None:
+        import torch
+        # --- Learned Edge Affinity ---
+        # Compute all pairwise features
+        centroids_t = torch.from_numpy(centroids_norm).float()
+        physics_t = torch.from_numpy(physics_vec_norm).float()
 
-    # --- KNN via KDTree ---
-    tree = cKDTree(combined_vec)
-    # Query K+1 because the first result is the node itself (distance=0)
-    k_query = min(K + 1, N)
-    _, indices = tree.query(combined_vec, k=k_query)
+        # Efficient pairwise differences
+        # spatial_dist: (N, N)
+        spatial_dist = torch.cdist(centroids_t, centroids_t)
+        
+        # physics diffs: (N, N, 4)
+        # S, R, D, H_physics
+        slope_diff = torch.abs(physics_t[:, 0].unsqueeze(1) - physics_t[:, 0].unsqueeze(0))
+        roughness_diff = torch.abs(physics_t[:, 1].unsqueeze(1) - physics_t[:, 1].unsqueeze(0))
+        # Use H_physics diff as a proxy for uncertainty diff if U is not yet computed
+        uncertainty_diff = torch.abs(physics_t[:, 3].unsqueeze(1) - physics_t[:, 3].unsqueeze(0))
 
-    # Build edge set (undirected)
-    edge_set = set()
-    for i in range(N):
-        for j_idx in range(k_query):
-            j = indices[i, j_idx]
-            if i != j:
-                # Add both directions
+        # Flatten upper triangle to evaluate
+        row, col = torch.triu_indices(N, N, offset=1)
+        s_dist = spatial_dist[row, col]
+        s_diff = slope_diff[row, col]
+        r_diff = roughness_diff[row, col]
+        u_diff = uncertainty_diff[row, col]
+
+        scorer.eval()
+        with torch.no_grad():
+            affinities = scorer(s_dist, s_diff, r_diff, u_diff) # (E,)
+
+        # Build adjacency matrix of affinities
+        adj = torch.zeros((N, N), dtype=torch.float32)
+        adj[row, col] = affinities
+        adj[col, row] = affinities
+
+        # Top K neighbors
+        k_query = min(K, N - 1)
+        _, topk_indices = adj.topk(k_query, dim=1)
+
+        edge_set = set()
+        for i in range(N):
+            for j_idx in range(k_query):
+                j = topk_indices[i, j_idx].item()
                 edge_set.add((i, j))
                 edge_set.add((j, i))
+
+    else:
+        # --- Static Heuristic ---
+        # Combined distance for KNN
+        # Concatenate scaled spatial + physics into a single vector for KDTree
+        # We scale each by its weight so Euclidean distance in joint space
+        # approximates: weight_s * d_spatial + weight_p * d_physics
+        spatial_scaled = centroids_norm * np.sqrt(spatial_weight)
+        physics_scaled = physics_vec_norm * np.sqrt(physics_weight)
+        combined_vec = np.hstack([spatial_scaled, physics_scaled])  # (N, 6)
+
+        # KNN via KDTree
+        tree = cKDTree(combined_vec)
+        # Query K+1 because the first result is the node itself (distance=0)
+        k_query = min(K + 1, N)
+        _, indices = tree.query(combined_vec, k=k_query)
+
+        # Build edge set (undirected)
+        edge_set = set()
+        for i in range(N):
+            for j_idx in range(k_query):
+                j = indices[i, j_idx]
+                if i != j:
+                    # Add both directions
+                    edge_set.add((i, j))
+                    edge_set.add((j, i))
 
     # Convert to COO
     if edge_set:

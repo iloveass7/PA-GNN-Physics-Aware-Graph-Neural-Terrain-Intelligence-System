@@ -3,11 +3,15 @@ heuristics.py
 -------------
 Stage 8 (blueprint §15) — Physics-aware heuristic for A* search.
 
-  h(n) = euclidean_distance(n, goal) × (1 + 0.4 × p̂_n + 0.1 × S_n)
+    h(n) = w * euclidean_distance(n, goal) × (1 + 0.4 × p̂_n + 0.1 × S_n)
 
 Slightly inadmissible — guides search toward safer corridors in practice.
 The risk and slope terms inflate the distance estimate for high-risk nodes,
 biasing the search away from hazardous terrain early in expansion.
+
+Phase 11 Upgrade: Added configurable weight `w` (default: 1.5) to implement 
+Weighted A* (Bounded Suboptimal). This dramatically speeds up search at the
+cost of guaranteed optimality, a standard technique in robot path planning.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ def physics_aware_heuristic(
     node_data: dict[int, dict[str, Any]],
     risk_weight: float = 0.4,
     slope_weight: float = 0.1,
+    w: float = 1.5,
 ) -> float:
     """Compute physics-aware A* heuristic from node to goal.
 
@@ -35,10 +40,11 @@ def physics_aware_heuristic(
                    'pos' (x,y), 'risk' (p̂_i), 'slope' (S_i)
     risk_weight  : float — coefficient for risk term (default: 0.4)
     slope_weight : float — coefficient for slope term (default: 0.1)
+    w            : float — WA* heuristic inflation weight (default: 1.5)
 
     Returns
     -------
-    h : float — estimated cost-to-go (slightly inadmissible)
+    h : float — estimated cost-to-go (bounded suboptimal)
     """
     n = node_data[node_id]
     g = node_data[goal_id]
@@ -53,7 +59,7 @@ def physics_aware_heuristic(
     slope = n.get("slope", 0.0)
 
     h = dist * (1.0 + risk_weight * risk + slope_weight * slope)
-    return h
+    return w * h
 
 
 def euclidean_heuristic(

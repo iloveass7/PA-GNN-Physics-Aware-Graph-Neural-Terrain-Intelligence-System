@@ -52,8 +52,7 @@ class PhysicsAwareGATv2Conv(MessagePassing):
     dropout      : float — dropout on attention coefficients
     negative_slope : float — LeakyReLU slope (default: 0.2)
     physics_lambda_init : float — initial value for learnable λ (default: 0.1)
-    slope_idx    : int   — index of slope feature S in node feature vector
-    roughness_idx : int  — index of roughness feature R in node feature vector
+    physics_indices : list[int] — indices of physics features [S, R, D, U, α, area]
     """
 
     def __init__(
@@ -65,8 +64,7 @@ class PhysicsAwareGATv2Conv(MessagePassing):
         dropout: float = 0.3,
         negative_slope: float = 0.2,
         physics_lambda_init: float = 0.1,
-        slope_idx: int = 2,
-        roughness_idx: int = 3,
+        physics_indices: list[int] | None = None,
     ):
         super().__init__(aggr="add", node_dim=0)
 
@@ -76,8 +74,8 @@ class PhysicsAwareGATv2Conv(MessagePassing):
         self.concat = concat
         self.dropout = dropout
         self.negative_slope = negative_slope
-        self.slope_idx = slope_idx
-        self.roughness_idx = roughness_idx
+        # Default features: S(2), R(3), D(4), H_physics(5), alpha(8), area(9)
+        self.physics_indices = physics_indices if physics_indices is not None else [2, 3, 4, 5, 8, 9]
 
         # --- Learnable parameters ---
 
@@ -125,16 +123,14 @@ class PhysicsAwareGATv2Conv(MessagePassing):
         x_proj = self.W(x).view(N, H, C)
 
         # Extract physics features for attention boosting
-        # Shape: (N,) each
-        slope = x[:, self.slope_idx]
-        roughness = x[:, self.roughness_idx]
+        # Shape: (N, len(physics_indices))
+        physics_feats = x[:, self.physics_indices]
 
         # Propagate messages
         out = self.propagate(
             edge_index,
             x_proj=x_proj,
-            slope=slope,
-            roughness=roughness,
+            physics_feats=physics_feats,
             size=None,
         )
 
@@ -151,10 +147,8 @@ class PhysicsAwareGATv2Conv(MessagePassing):
         self,
         x_proj_i: torch.Tensor,
         x_proj_j: torch.Tensor,
-        slope_i: torch.Tensor,
-        slope_j: torch.Tensor,
-        roughness_i: torch.Tensor,
-        roughness_j: torch.Tensor,
+        physics_feats_i: torch.Tensor,
+        physics_feats_j: torch.Tensor,
         index: torch.Tensor,
         ptr: Optional[torch.Tensor],
         size_i: Optional[int],
@@ -162,7 +156,7 @@ class PhysicsAwareGATv2Conv(MessagePassing):
         """Compute physics-aware attention and message for each edge.
 
         GATv2 attention: LeakyReLU is applied BEFORE the dot product.
-        Physics boost: λ × exp(−|ΔS| − |ΔR|) added to logit before softmax.
+        Physics boost: λ × exp(−sum(|ΔP|)) added to logit before softmax.
         """
         # --- Standard GATv2 attention logit ---
         # Concatenate source and target projections: (E, H, 2C)
@@ -175,8 +169,8 @@ class PhysicsAwareGATv2Conv(MessagePassing):
         alpha = (x_cat * self.att).sum(dim=-1)
 
         # --- Physics similarity boost ---
-        # Compute physics distance: |S_i − S_j| + |R_i − R_j|
-        physics_dist = (slope_i - slope_j).abs() + (roughness_i - roughness_j).abs()
+        # Compute physics distance across all provided indices (L1 norm)
+        physics_dist = (physics_feats_i - physics_feats_j).abs().sum(dim=-1)
 
         # Physics boost: λ × exp(−physics_distance)
         # Shape: (E,) → (E, 1) for broadcasting across heads

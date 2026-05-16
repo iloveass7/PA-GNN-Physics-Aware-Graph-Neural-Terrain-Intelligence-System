@@ -162,6 +162,28 @@ def fuse_risk_maps(
     return alpha * h_learned + (1.0 - alpha) * h_physics
 
 
+def alpha_regularization(alpha: torch.Tensor, beta: float = 0.01) -> torch.Tensor:
+    """Alpha diversity regularization to prevent fusion collapse.
+
+    L_alpha = beta * mean(alpha * (1 - alpha))
+
+    Maximises alpha entropy: penalises alpha maps that are entirely 0 or 1.
+    When alpha is pushed toward 0 or 1 everywhere (collapse/degeneration),
+    the product alpha*(1-alpha) approaches 0, so the penalty encourages
+    the network to maintain a spatially varying trust map.
+
+    Parameters
+    ----------
+    alpha : (B, 1, H, W)  fusion trust map in [0, 1]
+    beta  : float          regularization strength (default 0.01)
+
+    Returns
+    -------
+    scalar regularization loss
+    """
+    return beta * (alpha * (1.0 - alpha)).mean()
+
+
 # ---------------------------------------------------------------------------
 # EndToEndFusionModel — wraps CNN + Physics + Fusion
 # ---------------------------------------------------------------------------
@@ -234,51 +256,59 @@ class EndToEndFusionModel(nn.Module):
 
     def forward(
         self,
-        image_3ch: torch.Tensor,
+        image: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Run the full Stage 2→3→4 pipeline.
 
         Parameters
         ----------
-        image_3ch : (B, 3, H, W) float32 in [0, 1]
-            3-channel grayscale image (replicated).  This is what the DataLoader
-            produces.
+        image : (B, 1, H, W) float32 in [0, 1]
+            Single-channel grayscale image.
 
         Returns
         -------
         dict with keys:
-            h_final   : (B, 1, H, W) — fused risk map
-            h_learned : (B, 1, H, W) — CNN risk prediction
-            h_physics : (B, 1, H, W) — physics risk map
-            alpha     : (B, 1, H, W) — per-pixel trust map
-            features  : dict         — individual physics features {slope, roughness, disc}
+            h_final    : (B, 1, H, W) — fused risk map
+            h_learned  : (B, 1, H, W) — CNN risk prediction
+            h_physics  : (B, 1, H, W) — physics risk map
+            alpha      : (B, 1, H, W) — per-pixel trust map
+            alpha_reg  : scalar       — alpha diversity regularization loss
+            features   : dict         — individual physics features {slope, roughness, disc}
+            latency_ms : float        — execution time in ms (IEEE profiling)
         """
-        # --- Stage 3: CNN (frozen if freeze_cnn=True) ---
+        from src.utils.profiler import CUDATimer
+        timer = CUDATimer(device=image.device)
+        
+        with timer:
+            # --- Stage 3: CNN (frozen if freeze_cnn=True) ---
         if self.freeze_cnn:
             with torch.no_grad():
-                h_learned = self.cnn(image_3ch)  # (B, 1, H, W)
+                h_learned = self.cnn(image)  # (B, 1, H, W)
         else:
-            h_learned = self.cnn(image_3ch)
+            h_learned = self.cnn(image)
 
         # --- Stage 2: Physics features ---
-        # Physics engine expects (B, 1, H, W) or (B, 3, H, W).
-        # It auto-converts 3ch → 1ch internally.
         with torch.no_grad():
-            h_physics, features = self.physics_engine(image_3ch)  # (B, 1, H, W)
+            h_physics, features = self.physics_engine(image)  # (B, 1, H, W)
 
         # --- Extract grayscale channel for fusion input ---
-        grayscale = image_3ch[:, 0:1, :, :]  # (B, 1, H, W)
+        grayscale = image  # Already (B, 1, H, W)
 
         # --- Stage 4: Fusion ---
         alpha = self.fusion(h_physics, h_learned, grayscale)  # (B, 1, H, W)
         h_final = fuse_risk_maps(h_physics, h_learned, alpha)  # (B, 1, H, W)
+
+        # --- Alpha regularization ---
+        alpha_reg = alpha_regularization(alpha)
 
         return {
             "h_final":   h_final,
             "h_learned": h_learned,
             "h_physics": h_physics,
             "alpha":     alpha,
+            "alpha_reg": alpha_reg,
             "features":  features,
+            "latency_ms": timer.get_elapsed_ms(),
         }
 
     def get_trainable_params(self) -> list[torch.nn.Parameter]:

@@ -146,13 +146,16 @@ class PhysicsAwareAStar:
     use_physics_heuristic : bool — use physics-aware heuristic (default: True)
     risk_weight           : float — heuristic risk coefficient
     slope_weight          : float — heuristic slope coefficient
+    heuristic_weight      : float — WA* weight factor (default: 1.5)
     """
 
     def __init__(self, use_physics_heuristic: bool = True,
-                 risk_weight: float = 0.4, slope_weight: float = 0.1):
+                 risk_weight: float = 0.4, slope_weight: float = 0.1,
+                 heuristic_weight: float = 1.5):
         self.use_physics_heuristic = use_physics_heuristic
         self.risk_weight = risk_weight
         self.slope_weight = slope_weight
+        self.heuristic_weight = heuristic_weight
 
     def plan(self, G, node_data, start: int, goal: int,
              hazard_threshold: float = 0.7) -> Trajectory | None:
@@ -164,7 +167,7 @@ class PhysicsAwareAStar:
 
         if self.use_physics_heuristic:
             h_func = lambda n: physics_aware_heuristic(
-                n, goal, node_data, self.risk_weight, self.slope_weight)
+                n, goal, node_data, self.risk_weight, self.slope_weight, self.heuristic_weight)
         else:
             h_func = lambda n: euclidean_heuristic(n, goal, node_data)
 

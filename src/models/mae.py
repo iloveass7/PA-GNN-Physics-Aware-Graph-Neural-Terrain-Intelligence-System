@@ -55,7 +55,7 @@ class MaskedAutoencoder(nn.Module):
 
         Parameters
         ----------
-        x : (B, 3, 512, 512) — normalised grayscale tile, 3-channel
+        x : (B, 1, 512, 512) — normalised grayscale tile, single-channel
 
         Returns
         -------

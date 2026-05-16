@@ -47,6 +47,8 @@ except ImportError:
     roc_auc_score = None
 
 from src.models.gnn_model import PhysicsAwareGNN
+from src.graph.edge_scorer import EdgeAffinityMLP
+from src.evaluation.oversmoothing import log_layer_variances
 
 logging.basicConfig(
     level=logging.INFO,
@@ -143,9 +145,54 @@ def load_graph_split(graph_dir: Path, split: str) -> list[Data]:
 # Training and validation
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0):
+def dynamic_graph_warmup(batch, edge_scorer, K=5):
+    """Rebuild PyG batch edge_index using the learned EdgeAffinityMLP.
+    
+    Computes dense pairwise affinities within each graph in the batch,
+    selects top K edges per node, and returns the new edge_index.
+    """
+    import torch_geometric.utils as pyg_utils
+
+    N = batch.x.size(0)
+    # pos: (N, 2), features: S, R, D, H_physics are at indices 2, 3, 4, 5
+    pos = batch.pos
+    physics = batch.x[:, 2:6]
+
+    # Compute dense differences
+    spatial_dist = torch.cdist(pos, pos)
+    slope_diff = torch.abs(physics[:, 0].unsqueeze(1) - physics[:, 0].unsqueeze(0))
+    roughness_diff = torch.abs(physics[:, 1].unsqueeze(1) - physics[:, 1].unsqueeze(0))
+    uncertainty_diff = torch.abs(physics[:, 3].unsqueeze(1) - physics[:, 3].unsqueeze(0))
+
+    # Mask out edges between different graphs in the batch
+    same_graph_mask = (batch.batch.unsqueeze(1) == batch.batch.unsqueeze(0))
+
+    affinities = edge_scorer(spatial_dist, slope_diff, roughness_diff, uncertainty_diff)
+    # Zero out affinities between different graphs and self-loops
+    affinities = affinities * same_graph_mask.float()
+    affinities.fill_diagonal_(0.0)
+
+    # Get top K edges
+    k_query = min(K, affinities.size(1) - 1)
+    _, topk_indices = affinities.topk(k_query, dim=1)
+
+    # Build new edge_index
+    row = torch.arange(N, device=batch.x.device).view(-1, 1).expand(-1, k_query).flatten()
+    col = topk_indices.flatten()
+    
+    # Undirected
+    edge_index = torch.stack([row, col], dim=0)
+    edge_index = pyg_utils.to_undirected(edge_index)
+    
+    return edge_index
+
+
+def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0, edge_scorer=None, warmup=False):
     """Train one epoch. Returns dict with loss and MAE."""
     model.train()
+    if edge_scorer:
+        edge_scorer.train()
+        
     total_loss = 0.0
     total_mae = 0.0
     total_nodes = 0
@@ -154,13 +201,21 @@ def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0):
         batch = batch.to(device)
         optimizer.zero_grad(set_to_none=True)
 
-        pred = model(batch.x, batch.edge_index)  # (total_nodes,)
+        # Phase 7: Dynamic graph building during warmup
+        edge_index = batch.edge_index
+        if warmup and edge_scorer is not None:
+            edge_index = dynamic_graph_warmup(batch, edge_scorer)
+
+        pred = model(batch.x, edge_index)  # (total_nodes,)
         target = batch.y                          # (total_nodes,)
 
         loss = F.smooth_l1_loss(pred, target)
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        if edge_scorer:
+            torch.nn.utils.clip_grad_norm_(edge_scorer.parameters(), grad_clip)
+            
         optimizer.step()
 
         n = target.size(0)
@@ -204,6 +259,11 @@ def validate(model, loader, device, hazard_threshold=0.7):
         "loss": total_loss / total_nodes,
         "MAE": total_mae / total_nodes,
     }
+    
+    # Phase 9: Log oversmoothing metrics for the last batch
+    if len(loader) > 0:
+        smoothing_metrics = log_layer_variances(model, batch)
+        result.update(smoothing_metrics)
 
     # AUC-ROC for binary hazard classification
     if roc_auc_score is not None:
@@ -290,12 +350,16 @@ def main():
         ffn_dropout=mcfg["ffn_dropout"],
     ).to(device)
 
+    # Phase 7: EdgeAffinityMLP
+    edge_scorer = EdgeAffinityMLP().to(device)
+    
+    # Combine parameters for optimizer
+    params = list(model.parameters()) + list(edge_scorer.parameters())
+
+    if tcfg["optimizer"] == "Adam":
+        optimizer = Adam(params, lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info("Model parameters: %d (%.2f K)", n_params, n_params / 1000)
-
-    # --- Optimizer ---
-    optimizer = Adam(model.parameters(), lr=tcfg["lr"],
-                     weight_decay=tcfg["weight_decay"])
 
     # --- Checkpointing ---
     ckpt_dir = PROJECT_ROOT / cfg["checkpoints"]["save_dir"]
@@ -308,19 +372,29 @@ def main():
     log_csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     # --- Training loop ---
-    best_val_metric = float("inf") if ecfg["mode"] == "min" else float("-inf")
+    best_val_mae = float("inf")
     patience_counter = 0
+    warmup_epochs = 10  # Phase 7: warmup -> freeze
     history = []
 
     log.info("Starting training: %d epochs, batch_size=%d, lr=%.1e",
              tcfg["max_epochs"], tcfg["batch_size"], tcfg["lr"])
 
     for epoch in range(1, tcfg["max_epochs"] + 1):
-        t0 = time.time()
+        is_warmup = epoch <= warmup_epochs
+        if epoch == warmup_epochs + 1:
+            log.info("Freezing EdgeAffinityMLP and locking graph topology (Stage 2: Freeze).")
+            edge_scorer.eval()
 
+        t0 = time.time()
+        
         # Train
-        train_metrics = train_one_epoch(model, train_loader, optimizer,
-                                        device, tcfg["grad_clip"])
+        train_metrics = train_one_epoch(
+            model, train_loader, optimizer, device,
+            grad_clip=tcfg["grad_clip"],
+            edge_scorer=edge_scorer,
+            warmup=is_warmup
+        )
 
         # Validate
         val_metrics = {}
@@ -330,15 +404,12 @@ def main():
         elapsed = time.time() - t0
 
         # Log
-        val_mae_str = f"{val_metrics.get('MAE', 0):.4f}" if val_metrics else "N/A"
-        val_auc_str = f"{val_metrics.get('AUC', 0):.4f}" if val_metrics else "N/A"
         log.info(
-            "Epoch %3d/%d | train_loss=%.4f train_MAE=%.4f | "
-            "val_loss=%.4f val_MAE=%s val_AUC=%s | %.1fs",
+            "Epoch %3d/%3d | Train: Loss=%.4f MAE=%.4f | Val: Loss=%.4f MAE=%.4f AUC=%.4f | Smooth L1/L2: %.3f/%.3f",
             epoch, tcfg["max_epochs"],
             train_metrics["loss"], train_metrics["MAE"],
-            val_metrics.get("loss", 0), val_mae_str, val_auc_str,
-            elapsed,
+            val_metrics.get("loss", 0.0), val_metrics.get("MAE", 0.0), val_metrics.get("AUC", 0.0),
+            val_metrics.get("cos_sim_layer1", 0.0), val_metrics.get("cos_sim_layer2", 0.0)
         )
 
         # Physics lambda monitoring

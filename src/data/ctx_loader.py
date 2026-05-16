@@ -9,7 +9,7 @@ Blueprint §5.2:
   - No labels — unlabelled pretraining corpus
   - Normalised per tile to [0, 1]
   - No augmentation beyond MAE random masking (done inside the model)
-  - 3-channel replication for MobileNetV3 (done here, not in the model)
+  - 3-channel replication removed: true single-channel (1, H, W) output
 
 Data location: data/raw/ctx/sliced_tiles_1/ and data/raw/ctx/sliced_tiles_2/
   Tiles matching pattern: tile_x*_y*.png
@@ -41,9 +41,8 @@ class CTXDataset(Dataset):
     Scans one or more directories for PNG tiles matching the MurrayLab
     naming convention (tile_x*_y*.png).  Any 512×512 PNG file is accepted.
 
-    Each item returned is a (3, 512, 512) float32 tensor in [0, 1],
-    with the single grayscale channel replicated to 3 channels as
-    required by MobileNetV3.
+    Each item returned is a (1, 512, 512) float32 tensor in [0, 1],
+    single-channel grayscale.
 
     Parameters
     ----------
@@ -105,11 +104,11 @@ class CTXDataset(Dataset):
         return len(self.tile_paths)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        """Load one tile, normalise to [0,1], replicate to 3 channels.
+        """Load one tile, normalise to [0,1], return single-channel.
 
         Returns
         -------
-        torch.Tensor : (3, 512, 512) float32
+        torch.Tensor : (1, 512, 512) float32
         """
         path = self.tile_paths[idx]
         try:
@@ -124,7 +123,6 @@ class CTXDataset(Dataset):
         arr = np.clip(arr, 0.0, 1.0)
 
         tensor = torch.from_numpy(arr).unsqueeze(0)   # (1, 512, 512)
-        tensor = tensor.expand(3, -1, -1)              # (3, 512, 512)
         return tensor
 
 
