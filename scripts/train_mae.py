@@ -94,7 +94,7 @@ def save_reconstruction_samples(
     from src.models.encoder import PATCH_SIZE, IMAGE_SIZE
 
     for sample_idx, idx in enumerate(indices):
-        img_tensor = dataset[idx].unsqueeze(0).to(device)  # (1, 3, 512, 512)
+        img_tensor = dataset[idx].unsqueeze(0).to(device)  # (1, 1, 512, 512)
 
         _, pred, mask = model(img_tensor)
 
@@ -103,16 +103,19 @@ def save_reconstruction_samples(
         target_patches = patchify(img_tensor, PATCH_SIZE)  # (1, N, 768)
 
         # Compose reconstruction: use prediction for masked, original for visible
-        recon_patches = target_patches.clone()
-        mask_bool = mask.unsqueeze(-1).bool()               # (1, N, 1)
-        recon_patches = torch.where(mask_bool, pred, target_patches)
+        mean = target_patches.mean(dim=-1, keepdim=True)
+        var  = target_patches.var(dim=-1, keepdim=True)
+        pred_denorm = pred * (var + 1e-6).sqrt() + mean
+        pred_denorm  = pred_denorm.clamp(0.0, 1.0)
+        mask_bool = mask.unsqueeze(-1).bool()
+        recon_patches = torch.where(mask_bool, pred_denorm, target_patches)
 
-        recon_img = unpatchify(recon_patches, PATCH_SIZE, IMAGE_SIZE, channels=3)
+        recon_img = unpatchify(recon_patches, PATCH_SIZE, IMAGE_SIZE, channels=1)
 
         # Build masked image for visualisation (mask out 75% of patches)
         masked_patches = target_patches.clone()
         masked_patches[mask.bool()] = 0.0
-        masked_img = unpatchify(masked_patches, PATCH_SIZE, IMAGE_SIZE, channels=3)
+        masked_img = unpatchify(masked_patches, PATCH_SIZE, IMAGE_SIZE, channels=1)
 
         # Save triptych
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -121,7 +124,7 @@ def save_reconstruction_samples(
             [img_tensor, masked_img, recon_img],
             ["Original", "Masked (75%)", "Reconstructed"],
         ):
-            img_np = data[0, 0].cpu().numpy()  # take first channel (all 3 are identical)
+            img_np = data[0, 0].cpu().numpy()  # single-channel image, index channel dim
             ax.imshow(img_np, cmap="gray", vmin=0, vmax=1)
             ax.set_title(title, fontsize=12)
             ax.axis("off")
@@ -176,6 +179,7 @@ def train_mae(
         norm_pix_loss=True,
         pretrained_imagenet=True,
     ).to(device)
+
     log.info("Model parameters: %d", sum(p.numel() for p in model.parameters()))
 
     # --- Optimizer & scheduler ---
@@ -188,6 +192,9 @@ def train_mae(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=lr * 0.01
     )
+
+    # Mixed precision scaler
+    scaler = torch.amp.GradScaler('cuda', enabled=device.type == "cuda")
 
     # --- Resume ---
     start_epoch = 1
@@ -221,12 +228,15 @@ def train_mae(
         for batch_idx, images in enumerate(loader):
             images = images.to(device, non_blocking=True)
 
-            loss, _, _ = model(images)
+            with torch.amp.autocast('cuda', enabled=device.type == "cuda"):
+                loss, _, _ = model(images)
 
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
 
             epoch_losses.append(loss.item())
 
@@ -351,7 +361,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",  type=int,   default=64)
     parser.add_argument("--lr",          type=float, default=1.5e-4)
     parser.add_argument("--weight_decay",type=float, default=0.05)
-    parser.add_argument("--num_workers", type=int,   default=4)
+    parser.add_argument("--num_workers", type=int,   default=8)
     parser.add_argument("--device",      type=str,   default="auto",
                         help="'auto', 'cuda', or 'cpu'")
     parser.add_argument("--checkpoint_every", type=int, default=10,

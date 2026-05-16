@@ -99,3 +99,25 @@ This document tracks the progression and implementation status of the PA-GNN (Ph
     *   `src/planning/astar.py`: `PhysicsAwareAStar` — $C(i,j) = \exp(3 \times risk_{ij}) \times [0.6 \times risk + 0.25 \times dist + 0.15 \times |\Delta S|]$, uncertainty penalty $(1 + 2U_i)$ when $U_i > 0.3$, no hard node deactivation. Returns `Trajectory` with per-waypoint `dominant_signal` attribution ("physics"/"cnn").
     *   `src/planning/heuristics.py`: Physics-aware $h(n) = d(n, goal) \times (1 + 0.4 \hat{p}_n + 0.1 S_n)$ and baseline Euclidean heuristic for B1.
     *   `src/planning/dstar.py`: `DStarLite` incremental replanner for dynamic edge cost updates during active traversal.
+
+---
+
+## Changes — Pre-Run Fixes & Optimisations
+
+All changes applied **2026-05-16**, prior to first Stage 0 execution.
+
+### Bug Fixes (Critical — pipeline would crash or silently corrupt without these)
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| BF-1 | `src/models/decoder.py` | `PATCH_DIM` = `16×16×1 = 256` (was `16×16×3 = 768`) | CTX tiles are single-channel `(1, 512, 512)`. `patchify()` produces `(B, 1024, 256)` but decoder output was `(B, 1024, 768)`. Shape mismatch crashes `mae_loss()` on first forward pass. |
+| BF-2 | `src/models/encoder.py` | Moved `_proj_to_1ch` Conv2d from lazy `forward()` init to `__init__()` | Bare attribute assignment inside `forward()` meant the layer was not registered as a submodule — absent from `state_dict()`, not moved by `.to(device)`, and not included in the optimizer. Backbone received random-projected input for all 200 epochs (silent corruption). |
+| BF-3 | `scripts/train_mae.py` | `unpatchify(..., channels=1)` in two places + fixed misleading comments | `unpatchify` was called with `channels=3` but images are single-channel. Crashes during the verification visualisation step at epoch 50/100/150/200. |
+
+### Performance Improvements
+
+| # | File | Change | Expected Gain |
+|---|---|---|---|
+| PF-1 | `scripts/train_mae.py` | Added AMP (`torch.amp.autocast` + `GradScaler`) | ~40–50% faster on CUDA (FP16 tensor cores). No numerical impact on final weights. |
+| PF-2 | `scripts/train_mae.py` | `num_workers` default 4 → 8 | Eliminates DataLoader I/O stalls if CPU cores available. Override with `--num_workers 4` if needed. |
+| PF-3 | `src/models/encoder.py` | Upsample to 256×256 instead of 512×512 before backbone | ~10–15% less backbone compute. Backbone features are discarded in MAE loss; 256 closer to MobileNetV3 native 224. |

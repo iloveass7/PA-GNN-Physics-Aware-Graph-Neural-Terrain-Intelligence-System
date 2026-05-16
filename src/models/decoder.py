@@ -10,7 +10,7 @@ Blueprint §7:
 
 Input:  (B, N, D) patch embeddings from the encoder
 Output: (B, N, P*P*C) pixel values for each masked patch
-        where P = patch_size (16), C = channels (3)
+        where P = patch_size (16), C = channels (1)
 
 Loss:   Mean squared error on masked patches only (as per He et al. MAE, CVPR 2022).
 """
@@ -20,8 +20,8 @@ import torch.nn as nn
 
 from src.models.encoder import NUM_PATCHES, PATCH_SIZE
 
-# Reconstruction target: each patch is P×P×C = 16×16×3 = 768 values
-PATCH_DIM: int = PATCH_SIZE * PATCH_SIZE * 3   # 768
+# Reconstruction target: each patch is P×P×C = 16×16×1 = 256 values
+PATCH_DIM: int = PATCH_SIZE * PATCH_SIZE * 1   # 256
 
 
 class MAEDecoder(nn.Module):
@@ -170,7 +170,7 @@ def patchify(imgs: torch.Tensor, patch_size: int = PATCH_SIZE) -> torch.Tensor:
 
     x = imgs.reshape(B, C, h, patch_size, w, patch_size)
     x = x.permute(0, 2, 4, 3, 5, 1)   # (B, h, w, P, P, C)
-    x = x.flatten(2)                    # (B, h*w, P*P*C)
+    x = x.reshape(B, h * w, -1)                  # (B, h*w, P*P*C)
     return x
 
 
