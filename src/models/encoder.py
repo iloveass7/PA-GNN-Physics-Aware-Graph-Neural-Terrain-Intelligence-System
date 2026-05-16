@@ -139,6 +139,9 @@ class MAEEncoder(nn.Module):
         self._stride32_feat = None
         self._register_feature_hooks()
 
+        # Projection: 64 patch-embed channels → 1 channel for single-channel backbone input
+        self._proj_to_1ch = nn.Conv2d(64, 1, 1, bias=False)
+
     def _register_feature_hooks(self):
         """Hook into MobileNetV3 to capture stride-4 and stride-32 features."""
         # Stride-4: after features[1] (first InvertedResidual block)
@@ -218,14 +221,14 @@ class MAEEncoder(nn.Module):
         B, N, D = patches_masked.shape
         h_patches = w_patches = int(N ** 0.5)
         feat_map = patches_masked.transpose(1, 2).reshape(B, D, h_patches, w_patches)
-        # Upsample to 512×512 for backbone
+        # Upsample to 256×256 for backbone (reduced from 512 — backbone features are not
+        # used in MAE loss, only gradients flow back; 256 is closer to MobileNetV3's native 224)
         feat_upsampled = nn.functional.interpolate(
-            feat_map, size=(IMAGE_SIZE, IMAGE_SIZE),
+            feat_map, size=(256, 256),
             mode="bilinear", align_corners=False
         )
         # Project 64 → 1 channel for single-channel MobileNetV3
-        if not hasattr(self, "_proj_to_1ch"):
-            self._proj_to_1ch = nn.Conv2d(64, 1, 1, bias=False).to(x.device)
+
         feat_1ch = self._proj_to_1ch(feat_upsampled)
 
         # Step 4: Pass through MobileNetV3 backbone (hooks capture stride-4 and stride-32)

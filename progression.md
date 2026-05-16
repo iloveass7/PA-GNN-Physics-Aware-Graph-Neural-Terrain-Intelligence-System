@@ -5,6 +5,7 @@ This document tracks the progression and implementation status of the PA-GNN (Ph
 ## Stage 0: Self-Supervised Pretraining (MAE) — 🟢 **COMPLETE**
 *   **Goal:** Learn terrain representation from unlabelled MurrayLab CTX tiles.
 *   **Outputs:** MAE encoder checkpoint (`checkpoints/mae_best.pt`) for Stage 3 init.
+*   **Execution Results:** 200 epochs completed (Best Epoch: 195, Loss: 0.351469). Batch size reduced to 16 due to VRAM limits. AMP enabled (~70-75s/epoch).
 *   **Files Implemented:**
     *   `src/models/encoder.py`: MobileNetV3-Large + patch embedding + 75% random masking.
     *   `src/models/decoder.py`: 4-layer MLP + masked patch MSE loss.
@@ -99,3 +100,29 @@ This document tracks the progression and implementation status of the PA-GNN (Ph
     *   `src/planning/astar.py`: `PhysicsAwareAStar` — $C(i,j) = \exp(3 \times risk_{ij}) \times [0.6 \times risk + 0.25 \times dist + 0.15 \times |\Delta S|]$, uncertainty penalty $(1 + 2U_i)$ when $U_i > 0.3$, no hard node deactivation. Returns `Trajectory` with per-waypoint `dominant_signal` attribution ("physics"/"cnn").
     *   `src/planning/heuristics.py`: Physics-aware $h(n) = d(n, goal) \times (1 + 0.4 \hat{p}_n + 0.1 S_n)$ and baseline Euclidean heuristic for B1.
     *   `src/planning/dstar.py`: `DStarLite` incremental replanner for dynamic edge cost updates during active traversal.
+
+---
+
+## Changes — Stage 0 Execution Fixes & Optimisations
+
+All changes applied **2026-05-16**, during the execution of Stage 0.
+
+### Bug Fixes (Critical — pipeline would crash or silently corrupt without these)
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| BF-1 | `src/models/decoder.py` | `PATCH_DIM` = `16×16×1 = 256` (was `16×16×3 = 768`) | CTX tiles are single-channel `(1, 512, 512)`. `patchify()` produces `(B, 1024, 256)` but decoder output was `(B, 1024, 768)`. Shape mismatch crashes `mae_loss()` on first forward pass. |
+| BF-2 | `src/models/encoder.py` | Moved `_proj_to_1ch` Conv2d from lazy `forward()` init to `__init__()` | Bare attribute assignment inside `forward()` meant the layer was not registered as a submodule — absent from `state_dict()`, not moved by `.to(device)`, and not included in the optimizer. Backbone received random-projected input for all 200 epochs (silent corruption). |
+| BF-3 | `scripts/train_mae.py` | `unpatchify(..., channels=1)` in two places + fixed misleading comments | `unpatchify` was called with `channels=3` but images are single-channel. Crashes during the verification visualisation step at epoch 50/100/150/200. |
+| BF-4 | `src/models/decoder.py` | `patchify` used `flatten(2)` instead of `reshape(B, h*w, -1)` | Shape mismatch in `mae_loss` caused crash during training. |
+| BF-5 | `scripts/train_mae.py` | De-normalise raw predictions before compositing | Visualisation produced black/white noise due to raw logits composited against `[0,1]` original images. |
+
+### Performance & Configuration Adjustments
+
+| # | File | Change | Expected Gain / Rationale |
+|---|---|---|---|
+| PF-1 | `scripts/train_mae.py` | Added AMP (`torch.amp.autocast` + `GradScaler`) | ~40–50% faster on CUDA (FP16 tensor cores). Dropped epoch time to ~70-75s. |
+| PF-2 | `scripts/train_mae.py` | `num_workers` default 4 → 8 | Eliminates DataLoader I/O stalls. |
+| PF-3 | `src/models/encoder.py` | Upsample to 256×256 instead of 512×512 before backbone | ~10–15% less backbone compute. Handled VRAM limits alongside batch reduction. |
+| PF-4 | `scripts/train_mae.py` | Batch size reduced 64 → 16 | Prevented OOM crash on RTX 3060 Ti due to VRAM limits. |
+| PF-5 | `scripts/train_mae.py` | Removed `torch.compile` | Triton is not supported on Windows; removed to prevent crashes. |
