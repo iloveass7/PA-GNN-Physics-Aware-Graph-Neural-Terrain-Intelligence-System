@@ -19,8 +19,12 @@ OOD selection heuristic (deterministic):
     withheld as OOD. This ensures OOD terrain still appears in train.
   - Tie-break: alphabetical by alias.
 
+PERF-02: The tiling loop is parallelised with ProcessPoolExecutor.
+Each pair's tiling is I/O-bound (reading GeoTIFFs, writing .npy files) and
+completely independent.
+
 Run from the pa-gnn/ project root:
-    python scripts/tile_dataset.py [--overwrite]
+    python scripts/tile_dataset.py [--overwrite] [--workers 4]
 
 Outputs:
     data/processed/tiles/          — .npy tile quad files
@@ -39,6 +43,8 @@ import logging
 import math
 import random
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -153,12 +159,79 @@ def write_split_files(splits: dict[str, list[str]], splits_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-pair tiling worker (must be at module level for pickling by PERF-02)
+# ---------------------------------------------------------------------------
+
+def _tile_one_pair(args_dict: dict) -> list[dict]:
+    """Tile a single DEM pair.  Runs in a child process.
+
+    Parameters
+    ----------
+    args_dict : dict
+        Keys: alias, split, pair (vault dict), overwrite (bool)
+
+    Returns
+    -------
+    list of tile record dicts (with 'split' key injected)
+    """
+    # Re-configure logging in child process
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    _log = logging.getLogger("tile_dataset.worker")
+
+    alias    = args_dict["alias"]
+    split    = args_dict["split"]
+    pair     = args_dict["pair"]
+    overwrite = args_dict["overwrite"]
+
+    # Check required inputs exist
+    aligned_tif  = ALIGNED_DIR / (pair["ortho_tif"].stem + "_aligned.tif")
+    risk_tif     = LABELS_DIR / f"{alias}_risk.tif"
+    hazard_tif   = LABELS_DIR / f"{alias}_hazard.tif"
+    validity_tif = LABELS_DIR / f"{alias}_validity.tif"
+
+    missing = [p for p in [aligned_tif, risk_tif, hazard_tif, validity_tif]
+               if not p.exists()]
+    if missing:
+        _log.error(
+            "Missing Stage 1 label outputs for [%s]. "
+            "Run `python scripts/process_dems.py` first.\n  Missing: %s",
+            alias, [str(p) for p in missing],
+        )
+        return []
+
+    try:
+        records = tile_dem_pair(
+            alias=alias,
+            aligned_browse_tif=aligned_tif,
+            risk_tif=risk_tif,
+            hazard_tif=hazard_tif,
+            validity_tif=validity_tif,
+            output_dir=TILES_DIR / split,   # organise tiles by split subfolder
+            overwrite=overwrite,
+        )
+
+        for rec in records:
+            rec["split"] = split
+        _log.info("[%s] → %d tiles in '%s'", alias, len(records), split)
+        return records
+
+    except Exception as exc:
+        _log.exception("Tiling failed for [%s]: %s", alias, exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main(overwrite: bool = False) -> None:
+def main(overwrite: bool = False, max_workers: int = 4) -> None:
     log.info("=" * 60)
     log.info("PA-GNN Stage 1 — Tile Dataset Builder")
+    log.info("Workers: %d", max_workers)
     log.info("=" * 60)
 
     # ------------------------------------------------------------------
@@ -186,51 +259,52 @@ def main(overwrite: bool = False) -> None:
 
     # ------------------------------------------------------------------
     # Step 3: Tile each pair
+    #         PERF-02: parallelised via ProcessPoolExecutor
     # ------------------------------------------------------------------
     all_records: list[dict] = []
     TILES_DIR.mkdir(parents=True, exist_ok=True)
 
-    for i, pair in enumerate(pairs, 1):
+    # Pre-create split subdirectories
+    for split_name in splits:
+        (TILES_DIR / split_name).mkdir(parents=True, exist_ok=True)
+
+    # Build work items
+    work_items = []
+    for pair in pairs:
         alias = pair["alias"]
         split = alias_to_split.get(alias, "unknown")
-        log.info("")
-        log.info("--- %d/%d [%s] split=%s ---", i, len(pairs), alias, split)
+        work_items.append({
+            "alias": alias,
+            "split": split,
+            "pair": pair,
+            "overwrite": overwrite,
+        })
 
-        # Check required inputs exist
-        aligned_tif = ALIGNED_DIR / (pair["ortho_tif"].stem + "_aligned.tif")
-        risk_tif    = LABELS_DIR / f"{alias}_risk.tif"
-        hazard_tif  = LABELS_DIR / f"{alias}_hazard.tif"
-        validity_tif = LABELS_DIR / f"{alias}_validity.tif"
+    t0 = time.time()
 
-        missing = [p for p in [aligned_tif, risk_tif, hazard_tif, validity_tif]
-                   if not p.exists()]
-        if missing:
-            log.error(
-                "Missing Stage 1 label outputs for [%s]. "
-                "Run `python scripts/process_dems.py` first.\n  Missing: %s",
-                alias, [str(p) for p in missing],
-            )
-            continue
+    if max_workers <= 1:
+        # Sequential fallback
+        for i, item in enumerate(work_items, 1):
+            log.info("--- %d/%d [%s] split=%s ---",
+                     i, len(work_items), item["alias"], item["split"])
+            all_records.extend(_tile_one_pair(item))
+    else:
+        log.info("Tiling %d pairs with %d workers...",
+                 len(work_items), max_workers)
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_tile_one_pair, item): item["alias"]
+                for item in work_items
+            }
+            for future in as_completed(futures):
+                alias = futures[future]
+                try:
+                    records = future.result()
+                    all_records.extend(records)
+                except Exception as exc:
+                    log.exception("Worker crashed for [%s]: %s", alias, exc)
 
-        try:
-            records = tile_dem_pair(
-                alias=alias,
-                aligned_browse_tif=aligned_tif,
-                risk_tif=risk_tif,
-                hazard_tif=hazard_tif,
-                validity_tif=validity_tif,
-                output_dir=TILES_DIR / split,   # organise tiles by split subfolder
-                overwrite=overwrite,
-            )
-
-            for rec in records:
-                rec["split"] = split
-            all_records.extend(records)
-
-            log.info("[%s] → %d tiles in '%s'", alias, len(records), split)
-
-        except Exception as exc:
-            log.exception("Tiling failed for [%s]: %s", alias, exc)
+    elapsed = time.time() - t0
 
     # ------------------------------------------------------------------
     # Step 4: Write tile manifest
@@ -257,7 +331,8 @@ def main(overwrite: bool = False) -> None:
 
     log.info("")
     log.info("=" * 60)
-    log.info("Tiling complete. Tile counts by split:")
+    log.info("Tiling complete (%.1fs, %d workers). Tile counts by split:",
+             elapsed, max_workers)
     for split_name in ["train", "val", "test_in", "test_ood"]:
         log.info("  %-10s: %d tiles", split_name, by_split.get(split_name, 0))
     log.info("  TOTAL     : %d tiles", sum(by_split.values()))
@@ -275,5 +350,9 @@ if __name__ == "__main__":
         "--overwrite", action="store_true",
         help="Re-tile even if .npy files already exist.",
     )
+    parser.add_argument(
+        "--workers", type=int, default=4,
+        help="Number of parallel workers (default: 4). Use 1 for sequential.",
+    )
     args = parser.parse_args()
-    main(overwrite=args.overwrite)
+    main(overwrite=args.overwrite, max_workers=args.workers)

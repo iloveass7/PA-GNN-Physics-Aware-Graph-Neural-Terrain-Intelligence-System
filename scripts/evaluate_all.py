@@ -138,12 +138,12 @@ def run_dem_evaluation(
 
     Returns list of per-seed result dicts.
     """
-    from src.data.dem_loader import build_dataset
+    from src.data.label_generation import build_dataset
     from src.evaluation.evaluate_dem import evaluate_dem_split
 
     rows = []
     splits_dir = PROJECT_ROOT / "data" / "splits"
-    tiles_dir  = PROJECT_ROOT / "data" / "processed" / "dem_tiles"
+    tiles_dir  = PROJECT_ROOT / "data" / "processed" / "tiles"
 
     # Check data exists
     try:

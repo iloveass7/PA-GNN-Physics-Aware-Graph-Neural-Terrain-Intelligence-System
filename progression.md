@@ -126,3 +126,82 @@ All changes applied **2026-05-16**, during the execution of Stage 0.
 | PF-3 | `src/models/encoder.py` | Upsample to 256×256 instead of 512×512 before backbone | ~10–15% less backbone compute. Handled VRAM limits alongside batch reduction. |
 | PF-4 | `scripts/train_mae.py` | Batch size reduced 64 → 16 | Prevented OOM crash on RTX 3060 Ti due to VRAM limits. |
 | PF-5 | `scripts/train_mae.py` | Removed `torch.compile` | Triton is not supported on Windows; removed to prevent crashes. |
+
+---
+
+## Changes — Stage 1 Pre-Run Fixes & Performance Enhancements
+
+All changes applied **2026-05-16**, before the execution of Stage 1.
+
+### Bug Fixes
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| BUG-01 | `src/data/label_generation.py` | `build_dataset()` now auto-appends `split` subdirectory to `tiles_dir` (e.g. `tiles/train/`) with fallback to flat layout | `tile_dataset.py` writes tiles into `TILES_DIR / split` but `build_dataset()` searched only the root `tiles_dir` — zero tiles would be found in all downstream scripts (Stage 3/4/eval). |
+| BUG-01b | `scripts/evaluate_all.py` | Fixed import: `from src.data.label_generation import build_dataset` (was `src.data.dem_loader` — doesn't exist there). Fixed path: `tiles` (was `dem_tiles`). | Script would crash with `ImportError` before even reaching the tiles_dir bug. |
+| BUG-01c | `scripts/run_ablations.py` | Same fix as BUG-01b. | Same crash scenario. |
+| BASE-01 | `configs/base.yaml` | Updated `dem_tiles` path from `data/processed/dem_tiles` to `data/processed/tiles` | Alignment between config and actual implementation. |
+
+### Minor Fixes
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| MINOR-01 | `src/data/label_generation.py` | Removed unused `from src.data.normalize import to_cnn_input` | Dead import — `to_cnn_input` is never called in this module. |
+| MINOR-03a | `configs/datasets/dem.yaml` | Populated with blueprint §8 parameters (tiling, labels, hazard thresholds, splits) | Was 0 bytes. Required for downstream config-driven usage. |
+| MINOR-03b | `configs/datasets/ctx.yaml` | Populated with blueprint §5.2 parameters (paths, properties, demo selection, pretraining) | Was 0 bytes. |
+| MINOR-03c | `configs/datasets/hirise_v3.yaml` | Populated with blueprint §5.3 parameters (paths, classes, risk remapping, evaluation properties) | Was 0 bytes. |
+
+### Performance Enhancements
+
+| # | File | Change | Expected Gain / Rationale |
+|---|---|---|---|
+| PERF-01 | `scripts/process_dems.py` | Parallelised per-pair loop with `ProcessPoolExecutor` (default 4 workers). Extracted `_process_one_pair()` as a module-level function for pickling. Added `--workers` CLI flag. | ~3-4× speedup on 27 DEM pairs. Each pair (convert→align→label) is independent. gdalwarp subprocess calls overlap across workers. `--workers 1` provides sequential fallback for debugging. |
+| PERF-02 | `scripts/tile_dataset.py` | Parallelised per-pair tiling loop with `ProcessPoolExecutor` (default 4 workers). Extracted `_tile_one_pair()` as a module-level function. Added `--workers` CLI flag. | ~3-4× speedup. Each pair's tiling reads GeoTIFFs and writes .npy files independently. Split subdirectories are pre-created before workers start. |
+| PERF-05 | `src/data/hirise_loader.py` | Added detailed PERF-05 docstring documenting gdalwarp as the CPU-only bottleneck and noting that PERF-01 outer-loop parallelism is the correct mitigation. | Awareness / documentation. Prevents future developers from attempting GPU or inner-loop threading approaches. |
+
+---
+
+## Stage 1 Execution Results
+
+**Run date:** 2026-05-17  
+**Status:** ✅ **PASSED — all outputs verified on disk**
+
+### DEM Processing (`process_dems.py`)
+
+- **Runtime:** ~66 min (4 workers)
+- **Outcome:** 27/27 DEMs processed successfully, 0 failures
+- **Labels generated:** 135 files (27 × {slope, roughness, risk, hazard, validity}.tif) ✅
+- **Aligned browse images:** 27 GeoTIFFs ✅
+- **TIF cache:** 27 DEMs + 27 browse images ✅
+- **stage1_report.csv:** 28 lines (header + 27 entries, all status=OK) ✅
+- **CRS groups:** Equirectangular MARS (mid-latitude) + Polar Stereographic MARS (polar/dune) — both handled correctly
+- **Scale groups:** 19 DEMs at ~1m/px, 8 DEMs at ~2m/px
+
+### Tiling (`tile_dataset.py`)
+
+- **Runtime:** ~67s (4 workers)
+- **Total tiles:** 14,686 (within blueprint target 5,000–15,000) ✅
+
+| Split | Locations | Tiles | Files on Disk (×4 .npy) | Verified |
+|---|---|---|---|---|
+| train | 18 | 9,203 | 36,812 | ✅ |
+| val | 3 | 1,761 | 7,044 | ✅ |
+| test_in | 5 | 3,566 | 14,264 | ✅ |
+| test_ood | 1 | 156 | 624 | ✅ |
+| **TOTAL** | **27** | **14,686** | **58,744** | ✅ |
+
+- **OOD selection:** `Craters_089104` — 6 Craters remain in train ✅
+- **tile_manifest.csv:** 14,687 lines (header + 14,686 entries) ✅
+- **Split files:** 4 files in `data/splits/` — all populated with correct location counts ✅
+- **Saturation rejections:** 3 total (negligible) ✅
+- **NoData rejections:** Proportional to per-DEM NoData fractions ✅
+
+### Known Non-Blocking Concerns
+
+1. **Polar_005721:** 62% NoData — exceeded 50% threshold but still yielded 776 usable tiles. Not a blocker.
+2. **test_ood set:** Only 156 tiles from 1 DEM — structural constraint of the blueprint's OOD strategy. Report with bootstrapped CIs at evaluation.
+
+### Full Analysis
+
+See [`stage1_results.md`](file:///d:/Physics%20Aware%20-%20Graphical%20Neural%20Network%20for%20Planetary%20Path%20Planning/pa-gnn/results/result_anals/stage1_results.md) for detailed per-DEM breakdowns, hazard fraction analysis, and blueprint compliance table.
+

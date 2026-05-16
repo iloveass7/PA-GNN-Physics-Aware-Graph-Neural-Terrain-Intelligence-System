@@ -26,7 +26,7 @@ data:
     ctx:          "data/raw/ctx"
     hirise_v3:    "data/raw/hirise_v3"
   processed:
-    dem_tiles:     "data/processed/dem_tiles"
+    dem_tiles:     "data/processed/tiles"        # Note: blueprint §23 says dem_tiles/ but actual impl uses tiles/
     graphs:        "data/processed/graphs"
     ctx_pretrain:  "data/processed/ctx_pretrain"
     ctx_demo:      "data/processed/ctx_demo"

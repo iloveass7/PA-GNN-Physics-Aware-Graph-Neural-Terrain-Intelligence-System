@@ -251,9 +251,9 @@ def _evaluate_condition(
 
     # Load validation dataset
     try:
-        from src.data.dem_loader import build_dataset
+        from src.data.label_generation import build_dataset
         splits_dir = PROJECT_ROOT / "data" / "splits"
-        tiles_dir  = PROJECT_ROOT / "data" / "processed" / "dem_tiles"
+        tiles_dir  = PROJECT_ROOT / "data" / "processed" / "tiles"
         dataset = build_dataset(split, splits_dir, tiles_dir)
     except Exception as exc:
         log.warning("Could not load dataset for ablation '%s': %s", condition.name, exc)

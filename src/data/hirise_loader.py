@@ -1,12 +1,16 @@
 """
 hirise_loader.py
 ----------------
-Loads HiRISE ortho-image browse products from .JP2 format using the vault CSV.
-On first access, converts JP2 → GeoTIFF (tiled + LZW) and caches the result.
+Converts HiRISE browse ortho .JP2 images to GeoTIFF format and aligns them to
+their paired DEM GeoTIFF using GDAL's gdalwarp.
 
-Critically: also handles geometric alignment between the browse image and its
-paired DEM via gdalwarp — both must be on the same pixel grid before label
-generation can begin (Stage 1 of the blueprint).
+PERF-05 Note:
+    gdalwarp is CPU-only and dominates per-pair processing time (~60-80% of
+    wall clock per DEM pair).  There is no GPU warp path in GDAL.  The correct
+    mitigation is to parallelise the OUTER per-pair loop (PERF-01 in
+    process_dems.py) so that multiple gdalwarp subprocesses overlap.  Do NOT
+    attempt to call gdalwarp with multithreading flags from within a child
+    process — let the OS scheduler handle CPU core allocation across workers.
 
 Usage:
     from src.data.hirise_loader import load_browse, align_browse_to_dem
