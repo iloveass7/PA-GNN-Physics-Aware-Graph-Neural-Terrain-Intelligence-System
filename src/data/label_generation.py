@@ -31,7 +31,6 @@ import torch
 from torch.utils.data import Dataset
 
 from src.data.augmentations import TrainAugmentation, ValAugmentation
-from src.data.normalize import to_cnn_input
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +124,13 @@ def build_dataset(
     Reads the split .txt file, finds all matching tile .npy files in tiles_dir,
     and returns a TilePair dataset.
 
+    tile_dataset.py organises tiles into subdirectories by split name:
+        tiles_dir/{split}/{alias}_r{row}_c{col}_image.npy
+
+    This function automatically resolves the correct subdirectory.  If the
+    split subdirectory does not exist (e.g. when tiles_dir already points to
+    a flat directory), it falls back to searching tiles_dir directly.
+
     Parameters
     ----------
     split : str
@@ -132,7 +138,8 @@ def build_dataset(
     splits_dir : Path
         Directory containing train.txt, val.txt, test_in.txt, test_ood.txt.
     tiles_dir : Path
-        Directory containing .npy tile files (output of tile_dataset.py).
+        Root directory containing .npy tile files (output of tile_dataset.py).
+        Tiles are expected in ``tiles_dir/{split}/``.
 
     Returns
     -------
@@ -144,20 +151,35 @@ def build_dataset(
     log.info("Building '%s' dataset from %d DEM locations...", split, len(aliases))
 
     tiles_dir = Path(tiles_dir)
+
+    # BUG-01 fix: tile_dataset.py writes into tiles_dir/{split}/ subdirectories.
+    # Resolve the correct search directory, with a fallback for flat layouts.
+    split_subdir = tiles_dir / split
+    if split_subdir.is_dir():
+        search_dir = split_subdir
+    else:
+        log.warning(
+            "Split subdirectory %s does not exist — falling back to %s. "
+            "This may find zero tiles if tile_dataset.py was run with "
+            "split-based subdirectories.",
+            split_subdir, tiles_dir,
+        )
+        search_dir = tiles_dir
+
     records = []
 
     for alias in aliases:
         # Find all image tiles for this alias
-        image_files = sorted(tiles_dir.glob(f"{alias}_r*_c*_image.npy"))
+        image_files = sorted(search_dir.glob(f"{alias}_r*_c*_image.npy"))
         if not image_files:
-            log.warning("No tiles found for alias '%s' in %s", alias, tiles_dir)
+            log.warning("No tiles found for alias '%s' in %s", alias, search_dir)
             continue
 
         for img_npy in image_files:
             stem = img_npy.stem.replace("_image", "")
-            risk_npy   = tiles_dir / f"{stem}_risk.npy"
-            hazard_npy = tiles_dir / f"{stem}_hazard.npy"
-            valid_npy  = tiles_dir / f"{stem}_valid.npy"
+            risk_npy   = search_dir / f"{stem}_risk.npy"
+            hazard_npy = search_dir / f"{stem}_hazard.npy"
+            valid_npy  = search_dir / f"{stem}_valid.npy"
 
             if not all(p.exists() for p in [risk_npy, hazard_npy, valid_npy]):
                 log.warning("Incomplete tile quad for %s — skipping", stem)

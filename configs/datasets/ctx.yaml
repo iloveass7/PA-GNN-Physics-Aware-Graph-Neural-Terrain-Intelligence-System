@@ -1,0 +1,38 @@
+# configs/datasets/ctx.yaml
+# MurrayLab CTX Tiles dataset configuration — Blueprint §5.2.
+#
+# Source: MurrayLab CTX dataset, two tile sets of 8,649 tiles each = 17,298.
+# Format: PNG, grayscale, exactly 512×512 pixels. No resize needed.
+#
+# Two roles:
+#   1. MAE pretraining corpus (all 17,298 tiles, no labels).
+#   2. Qualitative demo inputs (3–5 selected tiles for end-to-end visualisation).
+
+# ── Paths (relative to project root) ─────────────────────────────────────────
+paths:
+  ctx_dir:        "data/raw/ctx"
+  pretrain_dir:   "data/processed/ctx_pretrain"
+  demo_dir:       "data/processed/ctx_demo"
+
+# ── Dataset properties ────────────────────────────────────────────────────────
+properties:
+  num_tiles: 17298
+  tile_size: 512              # Already 512×512, no resizing required
+  channels: 1                 # Single-channel grayscale
+  normalisation: "per_tile"   # Each tile independently normalised to [0, 1]
+
+# ── Demo tile selection criteria (§5.2) ───────────────────────────────────────
+demo:
+  n_tiles: 5                  # Select 3–5 tiles for qualitative figures
+  # Reject tiles where >30% of pixels are within 5% of the tile min or max
+  # (edge-of-mosaic padding artefacts)
+  padding_reject_fraction: 0.30
+  padding_margin_pct: 0.05
+
+# ── MAE pretraining reference (§7) ───────────────────────────────────────────
+# Detailed MAE training config lives in configs/mae.yaml.
+# This section documents CTX-specific choices that affect pretraining.
+pretraining:
+  augmentation: "none"        # No augmentation beyond standard MAE masking (§7)
+  mask_ratio: 0.75            # 75% of patches masked per forward pass
+  patch_size: 16              # 16×16 → 1024 patches per 512×512 image

@@ -1,0 +1,47 @@
+# configs/datasets/dem.yaml
+# HiRISE Stereo DEM dataset configuration — Blueprint §8.
+#
+# Source: USGS Astrogeology (https://www.uahirise.org/dtm/)
+# 27 DEM locations across 7 terrain types (Craters, Volcanic, Gullies,
+# Valleys, Canyon Walls, Polar, Dunes).
+
+# ── Paths (relative to project root) ─────────────────────────────────────────
+paths:
+  vault_csv:    "data/raw/mars_terrain_vault.csv"
+  dem_dir:      "data/raw/dem"
+  browse_dir:   "data/raw/hirise_browse"
+  tif_cache:    "data/processed/tif_cache"
+  aligned_dir:  "data/processed/aligned"
+  labels_dir:   "data/processed/labels"
+  tiles_dir:    "data/processed/tiles"
+  splits_dir:   "data/splits"
+  manifest_csv: "data/processed/tile_manifest.csv"
+
+# ── Tiling (§8) ──────────────────────────────────────────────────────────────
+tiling:
+  tile_size: 512              # 512×512 pixels
+  stride: 256                 # 50% overlap to reduce boundary artefacts
+  nodata_reject: 0.10         # reject tile if >10% DEM pixels are NoData
+  saturation_reject: 0.30     # reject if >30% image pixels near-saturated
+
+# ── Label computation (§8) ────────────────────────────────────────────────────
+labels:
+  slope_weight: 0.6           # risk = 0.6 × clamp(slope/20, 0, 1) + 0.4 × norm_roughness
+  roughness_weight: 0.4
+  slope_max_deg: 20.0         # Hard traversal limit (NASA rover specs)
+  label_clamp_min: 0.05       # Label smoothing to prevent sigmoid saturation
+  label_clamp_max: 0.95
+  roughness_window: 7         # 7×7 sliding window for roughness
+
+# ── Hazard threshold (§8) ────────────────────────────────────────────────────
+hazard:
+  slope_threshold_deg: 15.0   # Pixel is hazardous if slope > 15°
+  roughness_fraction: 0.6     # … OR roughness > 0.6 × tile_max_roughness
+
+# ── Splits (§8) ──────────────────────────────────────────────────────────────
+splits:
+  train_ratio: 0.70
+  val_ratio: 0.15
+  # test_in = 1.0 - train - val = 0.15
+  # test_ood = 1 complete DEM location from a different geological region
+  seed: 42

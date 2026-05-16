@@ -1,0 +1,48 @@
+# configs/datasets/hirise_v3.yaml
+# HiRISE Map-Projected v3 dataset configuration — Blueprint §5.3.
+#
+# Source: DOI 10.5281/zenodo.2538136 (Wagstaff et al., NASA JPL)
+# 73,031 total crops (10,433 originals × 7 augmentation variants).
+# Only the 10,433 originals are used for evaluation (augmented crops inflate metrics).
+#
+# Role: Zero-shot cross-domain evaluation.
+# The system is trained on DEM tiles and evaluated here with NO fine-tuning.
+
+# ── Paths (relative to project root) ─────────────────────────────────────────
+paths:
+  root_dir:     "data/raw/hirise_v3"
+  images_dir:   "data/raw/hirise_v3/images"
+  labels_txt:   "data/raw/hirise_v3/labels-map-proj_v3_2.txt"
+  classmap_csv: "data/raw/hirise_v3/map-proj-v3_2_classmap.csv"
+
+# ── Dataset properties ────────────────────────────────────────────────────────
+properties:
+  total_crops: 73031
+  original_crops: 10433       # Use ONLY originals for evaluation
+  augments_per_original: 6    # Dataset ordered in blocks of 7 (original + 6 augments)
+  native_size: 227            # Crops are 227×227
+  resize_to: 512              # Pipeline expects 512×512 — bilinear interpolation
+  channels: 1                 # Grayscale
+
+# ── Eight real classes (§5.3) ────────────────────────────────────────────────
+# NOTE: "edge_case" does NOT exist in the actual dataset. Never reference it.
+classes:
+  - "other"
+  - "crater"
+  - "dark_dune"
+  - "slope_streak"
+  - "bright_dune"
+  - "impact_ejecta"
+  - "swiss_cheese"
+  - "spider"
+
+# ── Risk score remapping (§5.3 Table) ────────────────────────────────────────
+risk_remap:
+  other:         0.15   # Generic flat terrain
+  crater:        0.90   # Rim and interior: entrapment and slope hazard
+  dark_dune:     0.85   # Fine sand: high slip and entrapment
+  slope_streak:  0.80   # Mass movement indicator: unstable terrain
+  bright_dune:   0.50   # Variable composition: moderate slip
+  impact_ejecta: 0.55   # Scattered rock: passable but rough
+  swiss_cheese:  0.85   # CO₂ sublimation pits: structurally unsafe
+  spider:        0.45   # Dendritic erosion: rough but often passable
