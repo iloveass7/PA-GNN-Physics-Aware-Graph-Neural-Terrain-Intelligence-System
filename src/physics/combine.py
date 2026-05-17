@@ -186,6 +186,7 @@ def build_physics_engine_from_config(config_path: str | None = None) -> PhysicsF
                 cfg = yaml.safe_load(f)
             if cfg:
                 defaults.update(cfg)
+                defaults.pop("ablation", None)
                 log.info("Physics config loaded from %s", config_path)
         except Exception as e:
             log.warning("Failed to load physics config, using defaults: %s", e)

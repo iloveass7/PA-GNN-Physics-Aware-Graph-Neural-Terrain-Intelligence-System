@@ -205,3 +205,22 @@ All changes applied **2026-05-16**, before the execution of Stage 1.
 
 See [`stage1_results.md`](file:///d:/Physics%20Aware%20-%20Graphical%20Neural%20Network%20for%20Planetary%20Path%20Planning/pa-gnn/results/result_anals/stage1_results.md) for detailed per-DEM breakdowns, hazard fraction analysis, and blueprint compliance table.
 
+---
+
+## Changes — Stage 2 Pre-Run Fixes
+
+All changes applied **2026-05-17**, before the execution of Stage 2.
+
+### Bug Fixes
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| BUG-02a | `scripts/precompute_graphs.py` | Added `gnn.yaml` loading to correctly define `allocation_mode`, `gamma`, `n_min`, `n_max`, and `compactness` | Variables were referenced in the `build_graph()` call but never defined in the script, leading to a `NameError` crash at Stage 5. |
+| BUG-02b | `src/graph/graph_builder.py` | Added 6 missing parameters (`allocation_mode`, `gamma`, `n_min`, `n_max`, `edge_mode`, `edge_scorer`) to `build_graph_from_npy()` signature with defaults. | `build_graph_from_npy` was passing these variables to `build_graph()` but they were undefined in its scope, causing the same `NameError` crash at Stage 5. |
+
+### Minor Fixes
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| MINOR-02 | `scripts/validate_dataset.py` | Added `random.seed(42)` at the start of `main()` | Ensures reproducible random sampling across runs for the Stage 2 sanity checks, visualizations, and especially the baseline Pearson r correlation metric reported in the thesis. |
+

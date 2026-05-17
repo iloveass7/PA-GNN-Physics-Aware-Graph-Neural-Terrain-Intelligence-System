@@ -290,6 +290,7 @@ def compute_physics_baseline_correlation(
 # ---------------------------------------------------------------------------
 
 def main(split: str = "train", n_samples: int = 50) -> None:
+    random.seed(42)  # Reproducible sampling for thesis-reportable metrics
     log.info("=" * 60)
     log.info("Stage 2 Validation — Physics Feature Engine")
     log.info("=" * 60)
