@@ -36,6 +36,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -108,6 +110,19 @@ def precompute_graphs(
     log.info("=" * 70)
     log.info("Phase 3a — Graph Precomputation (Stage 5)")
     log.info("=" * 70)
+
+    # --- Load GNN config (graph construction parameters) ---
+    gnn_config_path = PROJECT_ROOT / "configs" / "gnn.yaml"
+    if gnn_config_path.exists():
+        with open(gnn_config_path) as f:
+            gnn_config = yaml.safe_load(f) or {}
+        log.info("GNN config loaded from %s", gnn_config_path)
+    else:
+        gnn_config = {}
+        log.warning("GNN config not found at %s, using defaults", gnn_config_path)
+
+    graph_cfg = gnn_config.get("graph", {})
+    compactness = graph_cfg.get("compactness", 10.0)
 
     # --- Device ---
     if device_str == "auto":
@@ -233,10 +248,10 @@ def precompute_graphs(
                 K=K,
                 flat_threshold=flat_threshold,
                 hazard_threshold=hazard_threshold,
-                allocation_mode=gnn_config.get("graph", {}).get("allocation_mode", "continuous"),
-                gamma=gnn_config.get("graph", {}).get("gamma", 1.5),
-                n_min=gnn_config.get("graph", {}).get("n_min", 8),
-                n_max=gnn_config.get("graph", {}).get("n_max", 64),
+                allocation_mode=graph_cfg.get("allocation_mode", "continuous"),
+                gamma=graph_cfg.get("gamma", 1.5),
+                n_min=graph_cfg.get("n_min", 8),
+                n_max=graph_cfg.get("n_max", 64),
                 compactness=compactness,
             )
 
