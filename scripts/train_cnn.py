@@ -21,6 +21,10 @@ Outputs:
   results/stage3/predictions/          — sample prediction visualisations
   data/processed/cnn_train_log.csv     — epoch-level metric log
 """
+import os
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 
 import argparse
 import csv
@@ -103,7 +107,7 @@ def save_prediction_samples(
 
     for row, idx in enumerate(indices):
         sample = val_dataset[idx]
-        image  = sample["image"].unsqueeze(0).to(device)    # (1, 3, 512, 512)
+        image  = sample["image"].unsqueeze(0).to(device)    # (1, 1, 512, 512)
         target = sample["risk"].numpy()                     # (512, 512)
 
         pred = model(image)[0, 0].cpu().numpy()             # (512, 512)
@@ -246,7 +250,7 @@ def train_cnn(
     )
 
     # --- AMP scaler ---
-    scaler = torch.cuda.amp.GradScaler() if USE_AMP and device.type == "cuda" else None
+    scaler = torch.amp.GradScaler('cuda') if USE_AMP and device.type == "cuda" else None
 
     # --- Resume ---
     start_epoch  = 1

@@ -74,7 +74,10 @@ def weighted_bce_loss(
     pred = pred.clamp(eps, 1.0 - eps)
 
     # Per-pixel BCE (without reduction)
-    bce = F.binary_cross_entropy(pred, target, reduction="none")   # (B, H, W)
+    # F.binary_cross_entropy is unconditionally blocked under autocast —
+    # must locally disable autocast and cast to float32 explicitly.
+    with torch.amp.autocast('cuda', enabled=False):
+        bce = F.binary_cross_entropy(pred.float(), target.float(), reduction="none")   # (B, H, W)
 
     # Per-pixel weight map: hazardous → 3.0, otherwise → 1.0
     weights = torch.where(target > hazard_threshold,

@@ -33,7 +33,7 @@ loss:
 
 # --- DataLoader ---
 dataloader:
-  num_workers: 4
+  num_workers: 1
   pin_memory: true
 
 # --- Checkpointing ---
