@@ -238,7 +238,7 @@ def train_cnn(
     # --- Loss ---
     loss_fn = RiskLoss(
         hazard_threshold = float(loss_cfg.get("hazard_threshold", 0.7)),
-        hazard_weight    = float(loss_cfg.get("hazard_weight",    3.0)),
+        hazard_weight    = float(loss_cfg.get("hazard_weight",    5.0)),  # default synced with losses.py
         dice_coeff       = float(loss_cfg.get("dice_coeff",       0.5)),
         tv_coeff         = float(loss_cfg.get("tv_coeff",         0.1)),
     )

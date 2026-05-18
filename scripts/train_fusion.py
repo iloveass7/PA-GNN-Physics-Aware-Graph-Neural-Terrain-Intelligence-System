@@ -125,7 +125,7 @@ def train_one_epoch_fusion(
         optimizer.zero_grad(set_to_none=True)
 
         if scaler is not None:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 result = model(images)
                 h_final = result["h_final"]                        # (B, 1, H, W)
                 loss, comps = loss_fn(h_final, targets, validity)
@@ -436,7 +436,7 @@ def train_fusion(
     # --- Loss (same compound loss as Stage 3) ---
     loss_fn = RiskLoss(
         hazard_threshold = float(loss_cfg.get("hazard_threshold", 0.7)),
-        hazard_weight    = float(loss_cfg.get("hazard_weight",    3.0)),
+        hazard_weight    = float(loss_cfg.get("hazard_weight",    5.0)),  # default synced with losses.py
         dice_coeff       = float(loss_cfg.get("dice_coeff",       0.5)),
         tv_coeff         = float(loss_cfg.get("tv_coeff",         0.1)),
     )
@@ -454,7 +454,7 @@ def train_fusion(
     )
 
     # --- AMP scaler ---
-    scaler = torch.cuda.amp.GradScaler() if USE_AMP and device.type == "cuda" else None
+    scaler = torch.amp.GradScaler('cuda') if USE_AMP and device.type == "cuda" else None
 
     # --- Resume ---
     start_epoch  = 1

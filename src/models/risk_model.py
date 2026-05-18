@@ -29,7 +29,6 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint_sequential
 from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
 
 from src.models.encoder import adapt_first_conv
@@ -280,11 +279,13 @@ class RiskEstimator(nn.Module):
         -------
         H_learned : (B, 1, 512, 512) float32 in [0, 1]
         """
-        # Run backbone with gradient checkpointing (4 segments) to halve
-        # activation memory at ~30% extra compute — hooks still fire normally.
-        segments = 4
-        _ = checkpoint_sequential(self.features, segments, x,
-                                  use_reentrant=False)
+        # Run backbone. Hooks on features[2] and features[-1] capture the
+        # stride-4 and stride-32 feature maps used by the DeepLabV3+ decoder.
+        # NOTE: gradient checkpointing is intentionally NOT used here.
+        # checkpoint_sequential re-runs the forward pass during backward,
+        # which causes hooks to fire multiple times and overwrite each other,
+        # producing stale/mismatched decoder inputs and broken gradients.
+        _ = self.features(x)
 
         return self.decoder(
             stride32=self._stride32_feat,
