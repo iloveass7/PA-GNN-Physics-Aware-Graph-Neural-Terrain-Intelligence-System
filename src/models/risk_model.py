@@ -29,6 +29,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint_sequential
 from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
 
 from src.models.encoder import adapt_first_conv
@@ -235,24 +236,26 @@ class RiskEstimator(nn.Module):
         weights = MobileNet_V3_Large_Weights.IMAGENET1K_V2 if pretrained_imagenet else None
         backbone = mobilenet_v3_large(weights=weights)
 
+        # Adapt first conv from 3-channel → 1-channel via weight averaging
+        # (must happen before assigning self.features to avoid stale-reference fragility)
+        adapt_first_conv(backbone, in_channels=1)
+
         # Keep the feature extraction layers only (drop classifier)
         self.features = backbone.features
 
-        # Adapt first conv from 3-channel → 1-channel via weight averaging
-        adapt_first_conv(backbone, in_channels=1)
-
         # Detect channel dimensions at stride-4 and stride-32
         # MobileNetV3-Large:
-        #   features[0]    : stride-2  (first conv)
-        #   features[1]    : stride-4  (first InvertedResidual), out_channels=16
-        #   features[-1]   : stride-32 (last conv), out_channels=960
-        self._stride4_channels  = 16
+        #   features[0]    : stride-2  (first conv),                out=16,  256×256
+        #   features[1]    : stride-2  (InvertedResidual, stride=1), out=16,  256×256
+        #   features[2]    : stride-4  (InvertedResidual, stride=2), out=24,  128×128  ← skip
+        #   features[-1]   : stride-32 (last conv),                  out=960, 16×16
+        self._stride4_channels  = 24
         self._stride32_channels = 960
 
         # Hooks to capture intermediate features
         self._stride4_feat  = None
         self._stride32_feat = None
-        self.features[1].register_forward_hook(self._hook_stride4)
+        self.features[2].register_forward_hook(self._hook_stride4)
         self.features[-1].register_forward_hook(self._hook_stride32)
 
         # --- Decoder: DeepLabV3+ ---
@@ -277,8 +280,11 @@ class RiskEstimator(nn.Module):
         -------
         H_learned : (B, 1, 512, 512) float32 in [0, 1]
         """
-        # Run backbone — hooks populate _stride4_feat and _stride32_feat
-        _ = self.features(x)
+        # Run backbone with gradient checkpointing (4 segments) to halve
+        # activation memory at ~30% extra compute — hooks still fire normally.
+        segments = 4
+        _ = checkpoint_sequential(self.features, segments, x,
+                                  use_reentrant=False)
 
         return self.decoder(
             stride32=self._stride32_feat,
@@ -301,16 +307,24 @@ class RiskEstimator(nn.Module):
         ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=True)
         enc_state = ckpt.get("encoder_state_dict", ckpt)
 
-        # Extract only backbone weights (encoder.backbone.*)
+        # Extract only backbone.features weights — self.features is the Sequential,
+        # so its state_dict keys start at "0.0.weight" (no "features." prefix).
+        # Checkpoint keys are "backbone.features.0.0.weight" → strip "backbone.features."
         backbone_state = {}
         for k, v in enc_state.items():
-            if k.startswith("backbone."):
-                backbone_state[k.replace("backbone.", "")] = v
-            elif k.startswith("features."):
-                backbone_state[k] = v
+            if k.startswith("backbone.features."):
+                backbone_state[k.replace("backbone.features.", "")] = v
+
+        if not backbone_state:
+            raise RuntimeError(
+                f"MAE checkpoint '{checkpoint_path.name}' contains no keys "
+                f"starting with 'backbone.features.'. "
+                f"Found key prefixes: {sorted(set(k.split('.')[0] for k in enc_state))}. "
+                f"Cannot load MAE encoder — would silently train from random init."
+            )
 
         missing, unexpected = self.features.load_state_dict(backbone_state, strict=False)
-        n_loaded = len(backbone_state) - len(missing)
+        n_loaded = len(backbone_state) - len(unexpected)
         log.info(
             "MAE encoder loaded: %d/%d weights from %s "
             "(%d missing, %d unexpected)",

@@ -55,14 +55,14 @@ def train_one_epoch(
     n_batches = 0
 
     for batch in loader:
-        images   = batch["image"].to(device, non_blocking=True)    # (B, 3, 512, 512)
+        images   = batch["image"].to(device, non_blocking=True)    # (B, 1, 512, 512)
         targets  = batch["risk"].to(device, non_blocking=True)     # (B, 512, 512)
         validity = batch["valid"].to(device, non_blocking=True)    # (B, 512, 512)
 
         optimizer.zero_grad(set_to_none=True)
 
         if scaler is not None:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 pred = model(images)                                # (B, 1, 512, 512)
                 loss, comps = loss_fn(pred, targets, validity)
             scaler.scale(loss).backward()

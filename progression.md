@@ -224,3 +224,35 @@ All changes applied **2026-05-17**, before the execution of Stage 2.
 |---|---|---|---|
 | MINOR-02 | `scripts/validate_dataset.py` | Added `random.seed(42)` at the start of `main()` | Ensures reproducible random sampling across runs for the Stage 2 sanity checks, visualizations, and especially the baseline Pearson r correlation metric reported in the thesis. |
 
+---
+
+## Changes — Stage 3 Pre-Run Fixes
+
+All changes applied **2026-05-18**, before the execution of Stage 3.
+
+### Bug Fixes
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| BUG-03a | `src/models/risk_model.py` | Swapped `adapt_first_conv()` to run **before** `self.features = backbone.features` | `adapt_first_conv` mutates `backbone.features[0][0]`. Assigning `self.features` first only worked due to shared reference semantics — fragile if `adapt_first_conv` ever reassigned the container. Fix-then-assign makes intent explicit. |
+| BUG-03b | `src/models/risk_model.py` | Added empty-state guard: `if not backbone_state: raise RuntimeError(...)` in `load_mae_encoder()` | If MAE checkpoint key format changed, `backbone_state` would be empty and `strict=False` would silently load zero weights — training from random init after 4.5h of MAE pretraining. Also fixed `n_loaded` formula from `len(backbone_state) - len(missing)` → `len(backbone_state) - len(unexpected)`. |
+| BUG-03c | `src/training/trainer.py` | `torch.cuda.amp.autocast()` → `torch.amp.autocast('cuda')` | Deprecated API; Stage 0 already migrated. Would flood terminal with FutureWarnings at every batch, burying loss logs. |
+| BUG-03d | `scripts/train_cnn.py` | `torch.cuda.amp.GradScaler()` → `torch.amp.GradScaler('cuda')` | Same deprecated API migration as BUG-03c. |
+| BUG-03e | `src/models/risk_model.py` | **Key prefix fix:** `k.replace("backbone.", "")` → `k.replace("backbone.features.", "")` in `load_mae_encoder()` | Checkpoint keys are `backbone.features.0.0.weight`. Old code stripped only `backbone.` → `features.0.0.weight`, but `self.features` (the Sequential) expects `0.0.weight`. Result: 0/312 weights loaded, 312 unexpected. Verified fix loads 308/308 (4 classifier keys correctly skipped). |
+| BUG-03f | `src/training/losses.py` | Wrapped `F.binary_cross_entropy` in `torch.amp.autocast('cuda', enabled=False)` with `.float()` casts | `F.binary_cross_entropy` is unconditionally blocked under autocast (function-level hard block, not dtype check). `.float()` alone insufficient — must locally disable the autocast context. |
+
+### Minor Fixes
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| MINOR-03 | `src/training/trainer.py` | Comment fix: `# (B, 3, 512, 512)` → `# (B, 1, 512, 512)` | Dataset returns single-channel DEM tiles. Stale comment from initial 3-channel assumption. |
+| MINOR-04 | `scripts/train_cnn.py` | Comment fix: `# (1, 3, 512, 512)` → `# (1, 1, 512, 512)` | Same stale 3-channel comment. |
+
+### Performance Enhancements
+
+| # | File | Change | Expected Gain / Rationale |
+|---|---|---|---|
+| PERF-03 | `configs/cnn.yaml` | `num_workers: 4` → `num_workers: 8` | Stage 0 validated 8 workers eliminates DataLoader stalls. Stage 3 loads 4× .npy files per sample (image + risk + hazard + valid), making I/O bottleneck worse. Note: reduced back to 4 after RAM MemoryError with 8 workers on this system. |
+| PERF-04 | `src/models/risk_model.py` | Added gradient checkpointing: `checkpoint_sequential(self.features, 4, x, use_reentrant=False)` | Halves backbone activation memory at ~30% extra compute. Critical for batch 8 at 512×512 on RTX 3060 Ti. |
+| BUG-03g | `src/models/risk_model.py` | **Stride-4 hook fix:** `features[1]` → `features[2]`, channels 16 → 24, `low_level_channels=24` | `features[1]` is stride-2 (256×256), not stride-4. Decoder was processing `(B, 304, 256, 256)` skip tensors — 4× larger than intended. `features[2]` is actual stride-4 (128×128, 24ch), matching standard DeepLabV3+ design. |
+
