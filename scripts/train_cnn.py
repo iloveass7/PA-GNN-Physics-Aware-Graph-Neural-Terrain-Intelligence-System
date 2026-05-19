@@ -244,9 +244,16 @@ def train_cnn(
     )
 
     # --- Optimizer & Scheduler ---
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=MAX_EPOCHS, eta_min=LR * 0.01
+    optimizer = torch.optim.AdamW([
+    {"params": model.features.parameters(), "lr": 1e-5},
+    {"params": model.decoder.parameters(),  "lr": 1e-3},
+], weight_decay=WEIGHT_DECAY)
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=MAX_EPOCHS - 5, eta_min=1e-6
+    )
+    warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=5)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, [warmup, cosine_scheduler], milestones=[5]
     )
 
     # --- AMP scaler ---
