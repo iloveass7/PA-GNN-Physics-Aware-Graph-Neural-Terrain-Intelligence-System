@@ -216,15 +216,18 @@ class EndToEndFusionModel(nn.Module):
         physics_engine: PhysicsFeatureEngine,
         fusion: AdaptiveFusion,
         freeze_cnn: bool = True,
+        alpha_reg_beta: float = 0.01,
     ):
         super().__init__()
         self.cnn = cnn
         self.physics_engine = physics_engine
         self.fusion = fusion
         self.freeze_cnn = freeze_cnn
+        self.alpha_reg_beta = alpha_reg_beta
 
         if freeze_cnn:
             self._freeze_cnn()
+        self._freeze_physics()
 
     def _freeze_cnn(self) -> None:
         """Freeze all CNN parameters — blueprint §11 requirement."""
@@ -274,13 +277,8 @@ class EndToEndFusionModel(nn.Module):
             alpha      : (B, 1, H, W) — per-pixel trust map
             alpha_reg  : scalar       — alpha diversity regularization loss
             features   : dict         — individual physics features {slope, roughness, disc}
-            latency_ms : float        — execution time in ms (IEEE profiling)
         """
-        from src.utils.profiler import CUDATimer
-        timer = CUDATimer(device=image.device)
-        
-        with timer:
-            # --- Stage 3: CNN (frozen if freeze_cnn=True) ---
+        # --- Stage 3: CNN (frozen if freeze_cnn=True) ---
         if self.freeze_cnn:
             with torch.no_grad():
                 h_learned = self.cnn(image)  # (B, 1, H, W)
@@ -292,14 +290,15 @@ class EndToEndFusionModel(nn.Module):
             h_physics, features = self.physics_engine(image)  # (B, 1, H, W)
 
         # --- Extract grayscale channel for fusion input ---
-        grayscale = image  # Already (B, 1, H, W)
+        # Defensive slice: works whether image is 1-ch or 3-ch
+        grayscale = image[:, :1, :, :]  # (B, 1, H, W)
 
         # --- Stage 4: Fusion ---
         alpha = self.fusion(h_physics, h_learned, grayscale)  # (B, 1, H, W)
         h_final = fuse_risk_maps(h_physics, h_learned, alpha)  # (B, 1, H, W)
 
         # --- Alpha regularization ---
-        alpha_reg = alpha_regularization(alpha)
+        alpha_reg = alpha_regularization(alpha, beta=self.alpha_reg_beta)
 
         return {
             "h_final":   h_final,
@@ -308,7 +307,6 @@ class EndToEndFusionModel(nn.Module):
             "alpha":     alpha,
             "alpha_reg": alpha_reg,
             "features":  features,
-            "latency_ms": timer.get_elapsed_ms(),
         }
 
     def get_trainable_params(self) -> list[torch.nn.Parameter]:
@@ -375,6 +373,7 @@ def build_fusion_model(
     physics_w1: float = 0.4,
     physics_w2: float = 0.3,
     physics_w3: float = 0.3,
+    alpha_reg_beta: float = 0.01,
 ) -> EndToEndFusionModel:
     """Build the complete Stage 4 EndToEndFusionModel.
 
@@ -433,6 +432,7 @@ def build_fusion_model(
         physics_engine=physics_engine,
         fusion=fusion,
         freeze_cnn=freeze_cnn,
+        alpha_reg_beta=alpha_reg_beta,
     )
 
     params = model.count_params()
