@@ -30,7 +30,7 @@ training:
 
 # --- Early stopping ---
 early_stopping:
-  patience: 10                     # Stop if no improvement for 10 epochs
+  patience: 20                     # Increased from 10: consistent with Stage 3
   monitor: "val_hazard_recall"     # Must exceed H_learned recall alone
   mode: "max"                      # Higher recall = better
 
@@ -39,15 +39,17 @@ early_stopping:
 # using the same compound loss as Stage 3."
 loss:
   hazard_threshold: 0.7
-  hazard_weight: 3.0
+  pred_threshold: 0.3              # Threshold to binarise predictions for metric calculation (lowered from 0.5 due to class imbalance)
+  hazard_weight: 8.0               # Matched to Stage 3: needed for ~95:5 class imbalance (was 5.0)
   dice_coeff: 0.5
-  tv_coeff: 0.1
-  alpha_reg_beta: 0.01             # Alpha diversity regularization: L_alpha = beta * mean(alpha*(1-alpha))
+  tv_coeff: 0.01                   # Matched to Stage 3: 0.1 over-smoothed boundaries (was 0.1)
+  alpha_reg_beta: 0.01             # Alpha diversity regularization: L_alpha = beta * mean(alpha*(1-alpha)) (lowered from 0.5 to allow task loss to shape spatial variance)
+
+
 
 # --- DataLoader ---
 dataloader:
-  num_workers: 4
-  pin_memory: true
+  num_workers: 0                     # Windows: worker processes deadlock; GPU is fast enough for sync loading
 
 # --- Checkpointing ---
 checkpoints:

@@ -20,20 +20,20 @@ training:
 
 # --- Early stopping ---
 early_stopping:
-  patience: 10                     # Blueprint: patience 10
+  patience: 20                     # Increased from 10: model needs more warmup time
   monitor: "val_hazard_recall"     # Blueprint: monitor val_hazard_recall
   mode: "max"                      # Higher recall = better
 
 # --- Loss (matches blueprint §10 exactly) ---
 loss:
   hazard_threshold: 0.7            # Target > 0.7 → hazardous pixel
-  hazard_weight: 3.0               # BCE weight for hazardous pixels
+  hazard_weight: 8.0               # Increased from 3.0: needed for ~95:5 class imbalance
   dice_coeff: 0.5                  # L = L_BCE + 0.5·L_Dice + 0.1·L_TV
-  tv_coeff: 0.1
+  tv_coeff: 0.01
 
 # --- DataLoader ---
 dataloader:
-  num_workers: 4
+  num_workers: 1
   pin_memory: true
 
 # --- Checkpointing ---

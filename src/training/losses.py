@@ -35,7 +35,7 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------------
 
 HAZARD_THRESHOLD: float = 0.7    # above this → hazardous pixel
-HAZARD_WEIGHT:    float = 3.0    # BCE weight for hazardous pixels
+HAZARD_WEIGHT:    float = 5.0    # BCE weight for hazardous pixels (increased from 3.0 for ~95:5 imbalance)
 DICE_COEFF:       float = 0.5    # L = L_BCE + DICE_COEFF × L_Dice + TV_COEFF × L_TV
 TV_COEFF:         float = 0.1
 
@@ -74,7 +74,10 @@ def weighted_bce_loss(
     pred = pred.clamp(eps, 1.0 - eps)
 
     # Per-pixel BCE (without reduction)
-    bce = F.binary_cross_entropy(pred, target, reduction="none")   # (B, H, W)
+    # F.binary_cross_entropy is unconditionally blocked under autocast —
+    # must locally disable autocast and cast to float32 explicitly.
+    with torch.amp.autocast('cuda', enabled=False):
+        bce = F.binary_cross_entropy(pred.float(), target.float(), reduction="none")   # (B, H, W)
 
     # Per-pixel weight map: hazardous → 3.0, otherwise → 1.0
     weights = torch.where(target > hazard_threshold,
@@ -168,7 +171,7 @@ class RiskLoss(nn.Module):
     Parameters
     ----------
     hazard_threshold : float  — binary hazard boundary (default: 0.7)
-    hazard_weight    : float  — BCE weight for hazardous pixels (default: 3.0)
+    hazard_weight    : float  — BCE weight for hazardous pixels (default: 5.0)
     dice_coeff       : float  — Dice loss coefficient (default: 0.5)
     tv_coeff         : float  — TV loss coefficient (default: 0.1)
     """

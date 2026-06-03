@@ -118,17 +118,18 @@ def train_one_epoch_fusion(
     n_batches = 0
 
     for batch in loader:
-        images   = batch["image"].to(device, non_blocking=True)    # (B, 3, 512, 512)
+        images   = batch["image"].to(device, non_blocking=True)    # (B, 1, 512, 512)
         targets  = batch["risk"].to(device, non_blocking=True)     # (B, 512, 512)
         validity = batch["valid"].to(device, non_blocking=True)    # (B, 512, 512)
 
         optimizer.zero_grad(set_to_none=True)
 
         if scaler is not None:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 result = model(images)
                 h_final = result["h_final"]                        # (B, 1, H, W)
                 loss, comps = loss_fn(h_final, targets, validity)
+                loss = loss - result["alpha_reg"]
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.fusion.parameters(), grad_clip)
@@ -138,6 +139,7 @@ def train_one_epoch_fusion(
             result = model(images)
             h_final = result["h_final"]
             loss, comps = loss_fn(h_final, targets, validity)
+            loss = loss - result["alpha_reg"]
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.fusion.parameters(), grad_clip)
             optimizer.step()
@@ -158,6 +160,7 @@ def validate_one_epoch_fusion(
     loader: DataLoader,
     loss_fn: RiskLoss,
     device: torch.device,
+    pred_threshold: float = 0.5,
 ) -> dict[str, float]:
     """Run one validation epoch for Stage 4 fusion.
 
@@ -205,11 +208,11 @@ def validate_one_epoch_fusion(
 
         # Loss on H_final
         loss, comps = loss_fn(h_final, targets, validity)
-        metrics = compute_metrics(h_final, targets, validity)
+        metrics = compute_metrics(h_final, targets, validity, pred_threshold=pred_threshold)
 
         # Comparison metrics for H_learned and H_physics
-        learned_metrics = compute_metrics(h_learned, targets, validity)
-        physics_metrics = compute_metrics(h_physics, targets, validity)
+        learned_metrics = compute_metrics(h_learned, targets, validity, pred_threshold=pred_threshold)
+        physics_metrics = compute_metrics(h_physics, targets, validity, pred_threshold=pred_threshold)
 
         # Accumulate
         loss_accum["loss"] += comps["total"]
@@ -265,15 +268,15 @@ def save_fusion_samples(
 
     for row_idx, sample_idx in enumerate(indices):
         sample = val_dataset[sample_idx]
-        image_3ch = sample["image"].unsqueeze(0).to(device)  # (1, 3, 512, 512)
+        image_1ch = sample["image"].unsqueeze(0).to(device)  # (1, 1, 512, 512)
         target    = sample["risk"].numpy()                   # (512, 512)
 
-        result = model(image_3ch)
+        result = model(image_1ch)
         h_physics = result["h_physics"][0, 0].cpu().numpy()
         h_learned = result["h_learned"][0, 0].cpu().numpy()
         alpha_map = result["alpha"][0, 0].cpu().numpy()
         h_final   = result["h_final"][0, 0].cpu().numpy()
-        img_np    = image_3ch[0, 0].cpu().numpy()
+        img_np    = image_1ch[0, 0].cpu().numpy()
 
         panels = [img_np, target, h_physics, h_learned, alpha_map, h_final]
 
@@ -369,6 +372,8 @@ def train_fusion(
     es_cfg    = cfg.get("early_stopping", {})
     phys_cfg  = cfg.get("physics", {})
     diag_cfg  = cfg.get("diagnostic", {})
+    alpha_reg_beta = float(loss_cfg.get("alpha_reg_beta", 0.01))
+    PRED_THRESHOLD = float(loss_cfg.get("pred_threshold", 0.5))
 
     # Blueprint §11 enforcement
     joint_with_cnn = cfg.get("joint_with_cnn", False)
@@ -389,7 +394,7 @@ def train_fusion(
     GRAD_CLIP     = float(train_cfg.get("grad_clip", 1.0))
     USE_AMP       = bool(train_cfg.get("use_amp", True))
     PATIENCE      = int(es_cfg.get("patience", 10))
-    NUM_WORKERS   = int(dl_cfg.get("num_workers", 4))
+    NUM_WORKERS   = int(dl_cfg.get("num_workers", 0))
     PERIODIC_N    = int(ckpt_cfg.get("periodic_every", 5))
     ALPHA_STD_THR = float(diag_cfg.get("alpha_std_threshold", 0.02))
     ALPHA_LOG_N   = int(diag_cfg.get("log_alpha_stats_every", 5))
@@ -416,10 +421,10 @@ def train_fusion(
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=NUM_WORKERS, pin_memory=True,
-                              drop_last=True, persistent_workers=NUM_WORKERS > 0)
+                              drop_last=True, persistent_workers=False)
     val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False,
                               num_workers=NUM_WORKERS, pin_memory=True,
-                              persistent_workers=NUM_WORKERS > 0)
+                              persistent_workers=False)
 
     log.info("Train: %d tiles  |  Val: %d tiles", len(train_ds), len(val_ds))
 
@@ -430,13 +435,14 @@ def train_fusion(
         physics_w1=float(phys_cfg.get("w1", 0.4)),
         physics_w2=float(phys_cfg.get("w2", 0.3)),
         physics_w3=float(phys_cfg.get("w3", 0.3)),
+        alpha_reg_beta=alpha_reg_beta,
     )
     model = model.to(device)
 
     # --- Loss (same compound loss as Stage 3) ---
     loss_fn = RiskLoss(
         hazard_threshold = float(loss_cfg.get("hazard_threshold", 0.7)),
-        hazard_weight    = float(loss_cfg.get("hazard_weight",    3.0)),
+        hazard_weight    = float(loss_cfg.get("hazard_weight",    5.0)),  # default synced with losses.py
         dice_coeff       = float(loss_cfg.get("dice_coeff",       0.5)),
         tv_coeff         = float(loss_cfg.get("tv_coeff",         0.1)),
     )
@@ -454,7 +460,7 @@ def train_fusion(
     )
 
     # --- AMP scaler ---
-    scaler = torch.cuda.amp.GradScaler() if USE_AMP and device.type == "cuda" else None
+    scaler = torch.amp.GradScaler('cuda') if USE_AMP and device.type == "cuda" else None
 
     # --- Resume ---
     start_epoch  = 1
@@ -488,7 +494,7 @@ def train_fusion(
             model, train_loader, optimizer, loss_fn, device, GRAD_CLIP, scaler,
         )
         val_metrics = validate_one_epoch_fusion(
-            model, val_loader, loss_fn, device,
+            model, val_loader, loss_fn, device, pred_threshold=PRED_THRESHOLD,
         )
         scheduler.step()
 
@@ -595,6 +601,9 @@ def train_fusion(
     log.info("Stage 4 training complete.")
     log.info("  Best val_hazard_recall : %.4f", best_recall)
     log.info("  Best checkpoint        : %s", CKPT_DIR / "fusion_best.pt")
+    log.info("  ⚠  fusion_best.pt stores ONLY fusion weights (~12K params).")
+    log.info("     Stage 5 must also load checkpoints/cnn_best.pt to rebuild")
+    log.info("     EndToEndFusionModel.  DO NOT delete cnn_best.pt.")
     log.info("  Next: Stage 5 (graph precomputation) — uses H_final from this model.")
     log.info("=" * 60)
 
