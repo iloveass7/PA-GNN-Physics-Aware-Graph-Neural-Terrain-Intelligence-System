@@ -77,6 +77,32 @@ This document tracks the progression and implementation status of the PA-GNN (Ph
     *   `configs/gnn.yaml`: Graph construction parameters + Stage 6 GATv2 architecture config.
     *   `scripts/precompute_graphs.py`: Full Phase 3a precomputation script (Stage 2→3→4→5 per tile, validation, statistics, bridging frequency monitoring).
 
+## Changes — Stage 5 Pre-Run Fixes
+
+All changes applied **2026-06-04**, before the execution of Stage 5 graph precomputation.
+
+### Bug Fixes (Critical)
+
+| # | File | Change | Rationale |
+|---|---|---|---|
+| BUG-06a | `src/graph/node_features.py` | **Removed** the Phase 8 per-graph Z-score normalization block (14 lines, features `[2,3,4,5,6,7,8,10,11]`) | Per-graph Z-scoring centered feature 7 (H_final) at 0, causing `compute_edge_weights` to produce **negative edge weights** (blueprint formula: `0.6 × avg(H_final_i, H_final_j)` went negative for ~50% of edges). This also failed `validate_graph`'s `edge_weights_positive` and `features_bounded` checks on every graph. Additionally, per-tile normalization destroyed absolute risk scale — uniformly dangerous and uniformly safe tiles became indistinguishable, capping Stage 6 GNN accuracy. All 14 features were already in [0, 1] range by construction and required no normalization. |
+| BUG-06b | `scripts/precompute_graphs.py` | Fixed CSV `DictWriter` crash at end of run | `fieldnames` was taken from un-flattened `all_stats[0].keys()` (which contains the nested `tier_counts` dict key), but each row was written with flattened keys (`tier_counts_flat`, `tier_counts_complex`, `tier_counts_hazard`). `DictWriter` defaults to `extrasaction='raise'`, causing a `ValueError` that crashed the script after all graphs were already saved. Fixed by pre-flattening all rows with a `_flatten_stats()` helper and using `flat_rows[0].keys()` as fieldnames. |
+
+### Performance / Correctness Improvements
+
+| # | File | Change | Expected Gain / Rationale |
+|---|---|---|---|
+| OPT-06a | `src/graph/graph_builder.py` | `pixel_membership` dtype changed from `int64` (`.long()`) to `int16` (`.short()`) | Node label values max out at ~1,500, well within `int16`'s range of 32,767. `int64` stored 8 bytes/pixel vs 2 bytes for `int16` — a 4× reduction. Saves **~22 GB** across 14,686 tiles (from ~29 GB to ~7.5 GB for this field). All downstream consumers (`MCDropoutEstimator`, `PhysicsAwareAStar` via `pixel_membership`) perform index lookups which work identically with `int16`. |
+| OPT-06b | `scripts/precompute_graphs.py` | Removed redundant standalone `physics_engine` instantiation and the second `physics_engine(x)` forward pass per tile. Physics features (`slope`, `roughness`, `disc`) now extracted from `result["features"]` returned by the fusion model. | `EndToEndFusionModel.forward()` already runs `self.physics_engine(image)` internally and returns the feature dict as `result["features"]`. The script was running the physics engine **twice per tile** — once inside the fusion model and once explicitly via a separate `build_physics_engine_from_config()` instance. Eliminating the second call saves ~50% of physics compute time and removes one GPU model allocation (~7 MB). |
+| OPT-06c | `src/graph/graph_builder.py` | `validate_graph` node count cap raised from 1,500 → 2,000 | Test-ood pilot run (156 tiles) produced mean=1,206 nodes, max=1,521 — all valid graphs, but 21% triggered false `node_count_valid` warnings. The 1,500 cap was calibrated for discrete mode's 120–700 range. Continuous mode (n_min=8, n_max=64, gamma=1.5) legitimately produces denser graphs — this is the intended scientific contribution. Cap raised to 2,000 to eliminate noise from the validation log. |
+
+### Pipeline Impact Verification
+
+All 4 changes import-verified clean under the `research` conda environment. No downstream stage is broken:
+- Stage 6 (`train_gnn.py`) reads `x`, `edge_index`, `edge_attr`, `y`, `tier` — none changed shape or dtype.
+- Stage 7 (`mc_dropout.py`) uses `pixel_membership` only for index-based pixel projection — works identically with `int16`.
+- Stage 8 path planning does not read `pixel_membership` at all.
+
 ## Stage 6: Physics-Aware GATv2 with FFN Module — 🟢 **COMPLETE**
 *   **Goal:** Predict node safety states using physics-aware attention message passing.
 *   **Outputs:** Trained GATv2+FFN checkpoint (`checkpoints/gnn_best.pt`).

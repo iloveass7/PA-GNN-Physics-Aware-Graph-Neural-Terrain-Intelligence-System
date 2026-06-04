@@ -1,0 +1,124 @@
+# configs/gnn.yaml
+# Stage 5 + 6 — Graph Construction & GNN Training Configuration.
+# All values match blueprint §12 and §13 exactly.
+
+# --- Stage 5: Adaptive Graph Construction ---
+graph:
+  # Allocation mode (blueprint §12 / publication upgrade)
+  allocation_mode: "continuous" # "continuous" (primary) or "discrete" (ablation)
+  gamma: 1.5                   # Power-law exponent for continuous mode
+  n_min: 8                     # Min nodes per block for continuous mode
+  n_max: 64                    # Max nodes per block for continuous mode
+
+  # Tier thresholds (used for discrete mode and evaluation stratification)
+  flat_threshold: 0.25         # Below this → flat tier
+  hazard_threshold: 0.60       # Above this → hazard tier
+
+  # SLIC parameters
+  compactness: 10.0            # SLIC compactness (higher = more regular shape)
+  sigma: 1.0                   # SLIC Gaussian smoothing sigma
+
+  # KNN parameters (blueprint §12 Step 5)
+  K: 5                         # Number of nearest neighbours
+  spatial_weight: 0.5          # Weight for spatial distance in combined metric
+  physics_weight: 0.5          # Weight for physics distance in combined metric
+
+  # Node budget per tier (blueprint §12 Step 2)
+  flat_nodes: 5
+  complex_nodes: 15
+  hazard_nodes_min: 30
+  hazard_nodes_max: 50
+
+  # Block size for terrain complexity
+  block_size: 32               # 512/32 = 16×16 grid of blocks
+
+# --- Stage 6: GATv2 + FFN Architecture ---
+model:
+  # GATv2 Layer 1
+  layer1:
+    in_features: 14            # Node feature dimension
+    out_features: 32           # Per-head output dimension
+    heads: 4                   # Number of attention heads
+    concat: true               # Concatenate heads → 32×4 = 128-dim
+    dropout: 0.3               # Dropout rate
+    activation: "elu"          # Activation function
+
+  # GATv2 Layer 2
+  layer2:
+    in_features: 128           # 32×4 from layer 1
+    out_features: 32           # Output dimension
+    heads: 4                   # Number of attention heads
+    concat: false              # Average heads → 32-dim
+    dropout: 0.2               # Dropout rate
+    activation: "elu"
+
+  # FFN Diversity Module (blueprint §13)
+  ffn:
+    expansion: 4               # FFN hidden = expansion × D
+    dropout: 0.1               # FFN internal dropout
+    activation: "gelu"
+
+  # Physics-aware attention (blueprint §13)
+  physics_lambda_init: 0.1     # Learnable λ initial value
+  physics_features: [2, 3]     # Feature indices for S and R
+
+  # Output head
+  output_dim: 1                # Single sigmoid output per node
+
+# --- Training (blueprint §13) ---
+training:
+  target: "dem_risk"           # GNN targets DEM-derived risk, NOT H_final
+  loss: "smooth_l1"            # SmoothL1 (Huber) — robust to outliers
+  optimizer: "Adam"
+  lr: 1.0e-3
+  weight_decay: 5.0e-4
+  max_epochs: 100
+  batch_size: 32               # 32 precomputed graphs per batch
+  grad_clip: 1.0
+
+# --- Early stopping ---
+early_stopping:
+  patience: 15
+  monitor: "val_MAE"
+  mode: "min"                  # Lower MAE = better
+
+# --- Checkpointing ---
+checkpoints:
+  save_dir: "checkpoints"
+  best_name: "gnn_best.pt"
+  periodic_every: 10
+
+# --- DataLoader ---
+dataloader:
+  num_workers: 4
+  pin_memory: true
+  periodic_name: "gnn_epoch_{epoch:04d}.pt"
+
+# --- Logging ---
+logging:
+  results_dir: "results/stage6"
+  log_csv: "data/processed/gnn_train_log.csv"
+
+# --- Precomputed graph storage ---
+precomputed:
+  graphs_dir: "data/processed/graphs"
+  # Storage estimate (blueprint §12):
+  # ~320 nodes average × ~1.2 GB for 10,000 graphs
+  log_csv: "results/stage6/gnn_train_log.csv"
+  loss_curve_name: "gnn_loss_curve.png"
+
+# --- Uncertainty (Stage 7 / blueprint §14) ---
+uncertainty:
+  mc_passes: 5                 # N forward passes for MC dropout
+  mc_fallback: 3               # Reduced passes if inference >5s
+  uncertainty_threshold: 0.3   # U_i > threshold → inflate edge costs
+
+# --- Path planning (Stage 8 / blueprint §15) ---
+planning:
+  risk_weight: 0.6             # Edge cost: risk component weight
+  dist_weight: 0.25            # Edge cost: distance component weight
+  slope_weight: 0.15           # Edge cost: slope discontinuity weight
+  risk_exp_scale: 3.0          # exp(scale × risk) multiplier
+  uncertainty_penalty: 2.0     # Cost multiplier: (1 + penalty × U_i)
+  heuristic_risk_weight: 0.4   # h(n) risk term coefficient
+  heuristic_slope_weight: 0.1  # h(n) slope term coefficient

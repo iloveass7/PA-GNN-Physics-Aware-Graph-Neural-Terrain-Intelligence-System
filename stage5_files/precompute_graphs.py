@@ -47,7 +47,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.graph.graph_builder import build_graph, validate_graph
 from src.models.fusion import build_fusion_model
-
+from src.physics.combine import build_physics_engine_from_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -163,6 +163,8 @@ def precompute_graphs(
 
     model = model.to(device).eval()
 
+    # Also need the physics engine separately for individual features
+    physics_engine = build_physics_engine_from_config().to(device).eval()
 
     # --- Load manifest ---
     records = load_manifest(MANIFEST_CSV)
@@ -222,12 +224,12 @@ def precompute_graphs(
 
             with torch.no_grad():
                 result = model(x)
+                _, feats = physics_engine(x)
 
             h_physics = result["h_physics"][0, 0].cpu().numpy()
             h_learned = result["h_learned"][0, 0].cpu().numpy()
             h_final   = result["h_final"][0, 0].cpu().numpy()
             alpha     = result["alpha"][0, 0].cpu().numpy()
-            feats     = result["features"]  # from physics engine inside fusion model
             slope     = feats["slope"][0, 0].cpu().numpy()
             roughness = feats["roughness"][0, 0].cpu().numpy()
             disc      = feats["disc"][0, 0].cpu().numpy()
@@ -282,22 +284,19 @@ def precompute_graphs(
 
     # --- Save stats CSV ---
     if all_stats:
-        # Flatten nested dicts (e.g. tier_counts → tier_counts_flat, etc.)
-        def _flatten_stats(row):
-            flat = {}
-            for k, v in row.items():
-                if isinstance(v, dict):
-                    for k2, v2 in v.items():
-                        flat[f"{k}_{k2}"] = v2
-                else:
-                    flat[k] = v
-            return flat
-
-        flat_rows = [_flatten_stats(row) for row in all_stats]
         with open(STATS_CSV, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=flat_rows[0].keys())
+            writer = csv.DictWriter(f, fieldnames=all_stats[0].keys())
             writer.writeheader()
-            writer.writerows(flat_rows)
+            for row in all_stats:
+                # Flatten nested dicts
+                flat_row = {}
+                for k, v in row.items():
+                    if isinstance(v, dict):
+                        for k2, v2 in v.items():
+                            flat_row[f"{k}_{k2}"] = v2
+                    else:
+                        flat_row[k] = v
+                writer.writerows([flat_row])
         log.info("Graph stats saved: %s", STATS_CSV)
 
     # --- Summary ---
