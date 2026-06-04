@@ -243,7 +243,7 @@ def build_graph(
         pos=torch.from_numpy(pos).float(),                       # (N, 2)
         y=torch.from_numpy(node_labels).float(),                  # (N,)
         tier=torch.from_numpy(tiers).long(),                      # (N,)
-        pixel_membership=torch.from_numpy(pixel_membership).short(),  # (H, W) — int16, labels ≤ ~1500
+        pixel_membership=torch.from_numpy(pixel_membership).long(),  # (H, W)
     )
 
     # Attach stats as metadata (not a tensor, but stored for logging)
@@ -420,7 +420,7 @@ def validate_graph(data: "PyGData") -> dict[str, bool]:
     checks["single_component"] = (len(components) == 1)
 
     # 4. Node count range
-    checks["node_count_valid"] = (1 <= N <= 2000)  # continuous mode: mean ~1200, max ~1500+
+    checks["node_count_valid"] = (1 <= N <= 1500)
 
     # 5. Labels in [0, 1]
     checks["labels_bounded"] = bool(
