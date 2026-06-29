@@ -380,9 +380,6 @@ class PAGNNPipeline:
     ) -> list[dict]:
         """Stage 8 — A* path planning with per-waypoint attribution.
 
-        Blueprint §15: soft cost scaling, uncertainty penalty, per-waypoint
-        dominant risk signal attribution (physics vs CNN).
-
         Parameters
         ----------
         graph_data       : PyG Data with .pos, .x, pixel_membership
@@ -397,35 +394,21 @@ class PAGNNPipeline:
             row, col, risk, uncertainty, tier, attribution, node_idx
         """
         try:
-            from src.planning.astar import PAGNNAstar
+            from src.planning.astar import PhysicsAwareAStar
         except ImportError:
             log.warning("A* planner not available; returning empty path.")
             return []
 
-        # Map start/goal pixel coords → nearest node indices
         if not hasattr(graph_data, "pos") or graph_data.pos is None:
             log.warning("Graph has no .pos; skipping path planning.")
             return []
 
-        centroids = graph_data.pos.numpy()   # (N, 2) (row, col)
-        n_nodes   = centroids.shape[0]
+        pos_np = graph_data.pos.numpy()   # (N, 2) where pos[:, 0] is x (col), pos[:, 1] is y (row)
+        n_nodes = pos_np.shape[0]
 
-        # Uncertainty per node
-        if node_uncertainty is None:
-            node_unc = np.zeros(n_nodes, dtype=np.float32)
-        else:
-            node_unc = np.asarray(node_uncertainty, dtype=np.float32)
-
-        # α values for attribution (feature index 8 per blueprint §12 Step 4)
-        alpha_node = graph_data.x[:, 8].cpu().numpy() if graph_data.x.shape[1] > 8 else \
-                     np.full(n_nodes, 0.5, dtype=np.float32)
-
-        # Tier per node
-        tier_node = (graph_data.tier.numpy() if hasattr(graph_data, "tier") and
-                     graph_data.tier is not None else np.zeros(n_nodes, dtype=np.int64))
-
-        def _nearest_node(row: int, col: int) -> int:
-            dists = np.sqrt((centroids[:, 0] - row) ** 2 + (centroids[:, 1] - col) ** 2)
+        # Map start/goal pixel coords (row, col) → nearest node indices
+        def _nearest_node(r: int, c: int) -> int:
+            dists = np.sqrt((pos_np[:, 0] - c) ** 2 + (pos_np[:, 1] - r) ** 2)
             return int(np.argmin(dists))
 
         start_node = _nearest_node(*start)
@@ -435,45 +418,32 @@ class PAGNNPipeline:
             log.warning("Start and goal map to same node; trivial path.")
             return []
 
-        # Build path using A*
-        try:
-            planner = PAGNNAstar(
-                graph_data=graph_data,
-                node_risks=gnn_preds,
-                node_uncertainty=node_unc,
-                uncertainty_threshold=self.cfg.uncertainty_thresh,
-                uncertainty_penalty=self.cfg.uncertainty_penalty,
-            )
-            node_path = planner.find_path(start_node, goal_node)
-        except Exception as exc:
-            log.warning("A* failed: %s", exc)
-            return []
+        # Run PhysicsAwareAStar
+        planner = PhysicsAwareAStar(use_physics_heuristic=True)
+        traj = planner.plan_from_data(
+            data=graph_data,
+            start=start_node,
+            goal=goal_node,
+            node_risks=gnn_preds,
+            node_uncertainties=node_uncertainty,
+            hazard_threshold=self.cfg.hazard_threshold,
+        )
 
-        if not node_path:
+        if traj is None or not traj.success:
             return []
 
         # Build waypoint list with full attribution
         waypoints = []
-        for node_idx in node_path:
-            row = float(centroids[node_idx, 0])
-            col = float(centroids[node_idx, 1])
-            risk = float(gnn_preds[node_idx])
-            unc  = float(node_unc[node_idx]) if node_idx < len(node_unc) else 0.0
-            tier = int(tier_node[node_idx]) if node_idx < len(tier_node) else 0
-            alpha_val = float(alpha_node[node_idx]) if node_idx < len(alpha_node) else 0.5
-
-            # Attribution: CNN if α > 0.5, physics otherwise (blueprint §15)
-            attribution = "CNN" if alpha_val > 0.5 else "physics"
-
+        for wp in traj.waypoints:
             waypoints.append({
-                "node_idx":    node_idx,
-                "row":         row,
-                "col":         col,
-                "risk":        risk,
-                "uncertainty": unc,
-                "tier":        tier,
-                "alpha":       alpha_val,
-                "attribution": attribution,
+                "node_idx":    wp.node_id,
+                "row":         wp.y,  # wp.y is the row coordinate
+                "col":         wp.x,  # wp.x is the col coordinate
+                "risk":        wp.risk,
+                "uncertainty": wp.uncertainty,
+                "tier":        wp.tier,
+                "alpha":       wp.alpha,
+                "attribution": "CNN" if wp.dominant_signal == "cnn" else "physics",
             })
 
         return waypoints

@@ -87,6 +87,7 @@ def precompute_graphs(
     flat_threshold: float = 0.25,
     hazard_threshold: float = 0.60,
     device_str: str = "auto",
+    limit: int | None = None,
 ) -> None:
     """Precompute PyG graphs for all tiles.
 
@@ -168,6 +169,8 @@ def precompute_graphs(
     records = load_manifest(MANIFEST_CSV)
     if split_filter != "all":
         records = [r for r in records if r.get("split") == split_filter]
+    if limit is not None:
+        records = records[:limit]
     log.info("Processing %d tiles (split=%s)", len(records), split_filter)
 
     if not records:
@@ -373,6 +376,10 @@ if __name__ == "__main__":
         "--device", default="auto",
         help="'auto', 'cuda', or 'cpu'",
     )
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Max tiles to process (for quick demo runs)",
+    )
     args = parser.parse_args()
 
     precompute_graphs(
@@ -384,4 +391,5 @@ if __name__ == "__main__":
         flat_threshold=args.flat_threshold,
         hazard_threshold=args.hazard_threshold,
         device_str=args.device,
+        limit=args.limit,
     )

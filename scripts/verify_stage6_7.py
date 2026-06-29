@@ -330,7 +330,7 @@ from scripts.train_gnn import load_config
 cfg = load_config(str(PROJECT_ROOT / "configs" / "gnn.yaml"))
 check("Config loads model section", "model" in cfg)
 check("Config in_features=14", cfg["model"]["in_features"] == 14)
-check("Config loss=SmoothL1", cfg["training"]["loss"] == "SmoothL1")
+check("Config loss=smooth_l1", cfg["training"]["loss"] == "smooth_l1")
 
 # -----------------------------------------------------------------------
 # Summary

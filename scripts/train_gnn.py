@@ -16,6 +16,7 @@ Run from project root:
 """
 
 import argparse
+import copy
 import csv
 import logging
 import sys
@@ -71,6 +72,7 @@ DEFAULT_CONFIG = {
         "dropout_l1": 0.3,
         "dropout_l2": 0.2,
         "ffn_dropout": 0.1,
+        "physics_indices": [2, 3],
     },
     "training": {
         "optimizer": "Adam",
@@ -101,7 +103,7 @@ DEFAULT_CONFIG = {
 
 
 def load_config(config_path: str | None) -> dict:
-    cfg = DEFAULT_CONFIG.copy()
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
     if config_path and yaml:
         p = Path(config_path)
         if p.exists():
@@ -133,6 +135,10 @@ def load_graph_split(graph_dir: Path, split: str) -> list[Data]:
         try:
             data = torch.load(pt_file, weights_only=False)
             if hasattr(data, "x") and hasattr(data, "edge_index") and hasattr(data, "y"):
+                # Strip pixel_membership to save RAM (~512KB/graph);
+                # only needed by Stage 7 pixel projection (reloads from disk).
+                if hasattr(data, "pixel_membership"):
+                    del data.pixel_membership
                 graphs.append(data)
         except Exception as e:
             log.debug("Skipping %s: %s", pt_file.name, e)
@@ -209,7 +215,9 @@ def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0, edge_scorer
         pred = model(batch.x, edge_index)  # (total_nodes,)
         target = batch.y                          # (total_nodes,)
 
-        loss = F.smooth_l1_loss(pred, target)
+        binary_target = (target > 0.7).float()
+        pred_c = pred.clamp(1e-6, 1 - 1e-6)   # sigmoid output; guard log(0)
+        loss = F.binary_cross_entropy(pred_c, binary_target)
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -245,7 +253,9 @@ def validate(model, loader, device, hazard_threshold=0.7):
         pred = model(batch.x, batch.edge_index)
         target = batch.y
 
-        loss = F.smooth_l1_loss(pred, target)
+        binary_target = (target > 0.7).float()
+        pred_c = pred.clamp(1e-6, 1 - 1e-6)
+        loss = F.binary_cross_entropy(pred_c, binary_target)
         n = target.size(0)
         total_loss += loss.item() * n
         total_mae += (pred - target).abs().sum().item()
@@ -278,6 +288,12 @@ def validate(model, loader, device, hazard_threshold=0.7):
         else:
             result["AUC"] = 0.0
 
+    # Prediction spread monitoring (collapse detection)
+    preds_all = torch.cat(all_preds)
+    result["pred_std"] = float(preds_all.std().item())
+    result["pred_min"] = float(preds_all.min().item())
+    result["pred_max"] = float(preds_all.max().item())
+
     return result
 
 
@@ -292,6 +308,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training from checkpoints/gnn_latest.pt")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -340,6 +358,9 @@ def main():
                                shuffle=False) if val_graphs else None
 
     # --- Model ---
+    # Read physics_indices from config (YAML key: physics_features)
+    physics_indices = mcfg.get("physics_features", mcfg.get("physics_indices", [2, 3]))
+
     model = PhysicsAwareGNN(
         in_features=mcfg["in_features"],
         hidden_dim=mcfg["hidden_dim"],
@@ -348,6 +369,7 @@ def main():
         dropout_l1=mcfg["dropout_l1"],
         dropout_l2=mcfg["dropout_l2"],
         ffn_dropout=mcfg["ffn_dropout"],
+        physics_indices=physics_indices,
     ).to(device)
 
     # Phase 7: EdgeAffinityMLP
@@ -372,15 +394,30 @@ def main():
     log_csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     # --- Training loop ---
-    best_val_mae = float("inf")
+    start_epoch = 1
+    best_val_metric = float("-inf")
     patience_counter = 0
-    warmup_epochs = 10  # Phase 7: warmup -> freeze
+    warmup_epochs = 0   # Phase 7 warmup disabled: dense N×N OOMs on 8GB GPU
     history = []
+
+    latest_ckpt = ckpt_dir / "gnn_latest.pt"
+    if args.resume and latest_ckpt.exists():
+        log.info("Resuming from %s", latest_ckpt)
+        ckpt = torch.load(str(latest_ckpt), map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        if "edge_scorer_state_dict" in ckpt:
+            edge_scorer.load_state_dict(ckpt["edge_scorer_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        best_val_metric = ckpt.get("best_val_metric", float("-inf"))
+        patience_counter = ckpt.get("patience_counter", 0)
+        history = ckpt.get("history", [])
+        log.info("Resumed from epoch %d, best_val_metric=%.4f", start_epoch - 1, best_val_metric)
 
     log.info("Starting training: %d epochs, batch_size=%d, lr=%.1e",
              tcfg["max_epochs"], tcfg["batch_size"], tcfg["lr"])
 
-    for epoch in range(1, tcfg["max_epochs"] + 1):
+    for epoch in range(start_epoch, tcfg["max_epochs"] + 1):
         is_warmup = epoch <= warmup_epochs
         if epoch == warmup_epochs + 1:
             log.info("Freezing EdgeAffinityMLP and locking graph topology (Stage 2: Freeze).")
@@ -405,17 +442,20 @@ def main():
 
         # Log
         log.info(
-            "Epoch %3d/%3d | Train: Loss=%.4f MAE=%.4f | Val: Loss=%.4f MAE=%.4f AUC=%.4f | Smooth L1/L2: %.3f/%.3f",
+            "Epoch %3d/%3d | Train: Loss=%.4f MAE=%.4f | Val: Loss=%.4f MAE=%.4f AUC=%.4f | "
+            "pred[%.3f–%.3f] σ=%.4f | CosSim L1/L2: %.3f/%.3f",
             epoch, tcfg["max_epochs"],
             train_metrics["loss"], train_metrics["MAE"],
             val_metrics.get("loss", 0.0), val_metrics.get("MAE", 0.0), val_metrics.get("AUC", 0.0),
-            val_metrics.get("cos_sim_layer1", 0.0), val_metrics.get("cos_sim_layer2", 0.0)
+            val_metrics.get("pred_min", 0.0), val_metrics.get("pred_max", 0.0),
+            val_metrics.get("pred_std", 0.0),
+            val_metrics.get("cos_sim_layer1", 0.0), val_metrics.get("cos_sim_layer2", 0.0),
         )
 
-        # Physics lambda monitoring
+        # Physics lambda monitoring (promoted to INFO for visibility)
         for name, param in model.named_parameters():
             if "physics_lambda" in name:
-                log.debug("  λ (%s) = %.4f", name, param.item())
+                log.info("  λ (%s) = %.4f", name, param.item())
 
         # Save history
         row = {"epoch": epoch, **{f"train_{k}": v for k, v in train_metrics.items()}}
@@ -425,6 +465,17 @@ def main():
 
         # Early stopping
         if val_metrics:
+            # Collapse detection: good MAE but near-random AUC or collapsed predictions
+            if epoch > 5:
+                auc_val = val_metrics.get("AUC", None)
+                pred_std_val = val_metrics.get("pred_std", None)
+                if auc_val is not None and auc_val < 0.55:
+                    log.warning("  ⚠ Possible mean-collapse: AUC=%.4f (near random). "
+                               "Check if model predicts near-constant values.", auc_val)
+                if pred_std_val is not None and pred_std_val < 0.01:
+                    log.warning("  ⚠ Prediction spread collapsed: std=%.6f. "
+                               "Model may be outputting near-constant risk scores.", pred_std_val)
+
             monitor_val = val_metrics.get(ecfg["monitor"].replace("val_", ""), 0)
             is_better = (monitor_val < best_val_metric if ecfg["mode"] == "min"
                          else monitor_val > best_val_metric)
@@ -454,8 +505,26 @@ def main():
         periodic = cfg["checkpoints"].get("periodic_every", 10)
         if periodic and epoch % periodic == 0:
             periodic_path = ckpt_dir / f"gnn_epoch_{epoch:04d}.pt"
-            torch.save({"epoch": epoch,
-                        "model_state_dict": model.state_dict()}, periodic_path)
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "edge_scorer_state_dict": edge_scorer.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_metric": best_val_metric,
+                "patience_counter": patience_counter,
+                "history": history,
+            }, periodic_path)
+
+        # Save latest checkpoint every epoch to prevent losing progress
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "edge_scorer_state_dict": edge_scorer.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "best_val_metric": best_val_metric,
+            "patience_counter": patience_counter,
+            "history": history,
+        }, latest_ckpt)
 
     # --- Save training log ---
     if history:

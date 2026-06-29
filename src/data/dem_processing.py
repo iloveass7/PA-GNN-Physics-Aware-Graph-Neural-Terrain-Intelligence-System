@@ -45,16 +45,13 @@ log = logging.getLogger(__name__)
 # Blueprint constants (Section 8 of pagnn_final_blueprint_v4.md)
 # ---------------------------------------------------------------------------
 
-# Hard traversal limit for a Mars rover — NASA rover mechanical specification
-SLOPE_LIMIT_DEG: float = 20.0
+# Risk score formula — fixed physical scales (blueprint §8, corrected)
+SLOPE_LIMIT_DEG: float = 30.0          # rover slope traversal limit, degrees
+ROUGHNESS_SCALE_M: float = 3.0         # rover-relevant obstacle roughness scale, metres
 
 # Hazard threshold for evaluation binary mask
-HAZARD_SLOPE_THRESH_DEG: float = 15.0
-HAZARD_ROUGHNESS_FRACTION: float = 0.6  # fraction of tile max roughness
-
-# Risk score formula weights
-RISK_SLOPE_WEIGHT: float = 0.6
-RISK_ROUGHNESS_WEIGHT: float = 0.4
+HAZARD_SLOPE_THRESH_DEG: float = 15.0  # degrees
+HAZARD_ROUGHNESS_THRESH_M: float = 1.0 # metres — fixed physical scale (was 0.6 × tile_max)
 
 # Label smoothing: clamp to [RISK_MIN, RISK_MAX] to avoid sigmoid saturation
 RISK_MIN: float = 0.05
@@ -176,10 +173,18 @@ def compute_risk_label(
 ) -> np.ndarray:
     """Generate the DEM-derived risk score used as CNN training supervision.
 
-    Formula (blueprint Section 8):
-        risk = 0.6 × clamp(slope_deg / 20.0, 0, 1)
-               + 0.4 × (roughness / tile_max_roughness)
-        risk = clamp(risk, 0.05, 0.95)
+    Formula (blueprint §8, corrected):
+        slope_norm     = clamp(slope_deg / 20.0, 0, 1)
+        roughness_norm = clamp(roughness_m / 2.0, 0, 1)   # fixed physical scale, metres
+        risk           = max(slope_norm, roughness_norm)  # either signal can flag hazard
+        risk           = clamp(risk, 0.05, 0.95)
+
+    Rationale: the previous weighted sum (0.6*slope + 0.4*roughness) capped the
+    slope term at 0.6, placing genuinely steep terrain below the 0.7 hazard
+    threshold, while per-tile-max roughness normalisation was dominated by
+    NoData-boundary outliers (max-combine of two independently, *physically*
+    normalised signals fixes both: either a steep OR a rough pixel can reach high
+    risk, and fixed scales make labels comparable across tiles and terrain types).
 
     Parameters
     ----------
@@ -189,21 +194,13 @@ def compute_risk_label(
 
     Returns
     -------
-    risk : np.ndarray (H, W), float32 — values in [RISK_MIN, RISK_MAX]
+    risk : np.ndarray (H, W), float32 — values in [RISK_MIN, RISK_MAX].
           Invalid pixels are set to NaN so they can be masked in training.
     """
-    # Normalise slope to [0, 1] by SLOPE_LIMIT_DEG
     slope_norm = np.clip(slope_deg / SLOPE_LIMIT_DEG, 0.0, 1.0)
+    roughness_norm = np.clip(roughness_m / ROUGHNESS_SCALE_M, 0.0, 1.0)
 
-    # Normalise roughness by tile maximum (computed over valid pixels only)
-    valid_roughness = roughness_m[valid_mask]
-    tile_max_roughness = float(valid_roughness.max()) if valid_roughness.size > 0 else 1.0
-    if tile_max_roughness == 0.0:
-        tile_max_roughness = 1.0  # avoid division by zero on perfectly flat tiles
-    roughness_norm = np.clip(roughness_m / tile_max_roughness, 0.0, 1.0)
-
-    risk = (RISK_SLOPE_WEIGHT * slope_norm +
-            RISK_ROUGHNESS_WEIGHT * roughness_norm).astype(np.float32)
+    risk = np.maximum(slope_norm, roughness_norm).astype(np.float32)
 
     # Label smoothing
     risk = np.clip(risk, RISK_MIN, RISK_MAX)
@@ -229,7 +226,10 @@ def compute_hazard_mask(
 
     A pixel is hazardous if:
         slope > HAZARD_SLOPE_THRESH_DEG (15°)  OR
-        roughness > HAZARD_ROUGHNESS_FRACTION × tile_max_roughness (0.6 × max)
+        roughness > HAZARD_ROUGHNESS_THRESH_M (1.0 m)
+
+    Uses fixed physical thresholds (not per-tile-max) so the binary mask is
+    consistent with the continuous risk label and comparable across tiles.
 
     Parameters
     ----------
@@ -240,14 +240,9 @@ def compute_hazard_mask(
     -------
     hazard : np.ndarray (H, W), uint8 — {0, 1}.  Invalid pixels = 0.
     """
-    valid_roughness = roughness_m[valid_mask]
-    tile_max_roughness = float(valid_roughness.max()) if valid_roughness.size > 0 else 1.0
-    if tile_max_roughness == 0.0:
-        tile_max_roughness = 1.0
-
     hazard = (
         (slope_deg > HAZARD_SLOPE_THRESH_DEG) |
-        (roughness_m > HAZARD_ROUGHNESS_FRACTION * tile_max_roughness)
+        (roughness_m > HAZARD_ROUGHNESS_THRESH_M)
     ).astype(np.uint8)
 
     hazard[~valid_mask] = 0

@@ -31,6 +31,7 @@ Outputs:
 """
 
 import argparse
+import rasterio
 import csv
 import json
 import logging

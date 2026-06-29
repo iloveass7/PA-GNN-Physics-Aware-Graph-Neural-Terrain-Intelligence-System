@@ -93,6 +93,7 @@ class PhysicsAwareGNN(nn.Module):
         dropout_l1: float = 0.3,
         dropout_l2: float = 0.2,
         ffn_dropout: float = 0.1,
+        physics_indices: list[int] | None = None,
     ):
         super().__init__()
 
@@ -104,6 +105,7 @@ class PhysicsAwareGNN(nn.Module):
             concat=True,
             dropout=dropout_l1,
             physics_lambda_init=physics_lambda_init,
+            physics_indices=physics_indices,
         )
         dim_after_l1 = heads * hidden_dim  # 4 × 32 = 128
         self.dropout1 = nn.Dropout(dropout_l1)
@@ -121,6 +123,7 @@ class PhysicsAwareGNN(nn.Module):
             concat=False,
             dropout=dropout_l2,
             physics_lambda_init=physics_lambda_init,
+            physics_indices=physics_indices,
         )
         self.dropout2 = nn.Dropout(dropout_l2)
         self.ffn2 = GNNFFNBlock(

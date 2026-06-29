@@ -309,3 +309,73 @@ def _align_with_rasterio(
 
     log.info("Alignment complete: %s", aligned_path.name)
     return aligned_path
+
+
+import torch
+from torch.utils.data import Dataset
+from PIL import Image
+
+class HiRISEv3Dataset(Dataset):
+    """Dataset for HiRISE Map-Proj-v3 crops.
+
+    Reads crops from `map-proj-v3/` directory and re-scales to `target_size`.
+    """
+    def __init__(self, root_dir: str | Path, target_size: int = 512):
+        self.root_dir = Path(root_dir)
+        self.target_size = target_size
+        self.img_dir = self.root_dir / "map-proj-v3"
+        self.label_file = self.root_dir / "labels-map-proj-v3.txt"
+        self.classmap_file = self.root_dir / "landmarks_map-proj-v3_classmap.csv"
+
+        if not self.label_file.exists():
+            raise FileNotFoundError(f"HiRISE labels file not found: {self.label_file}")
+
+        # Load labels mapping: filename -> class_id
+        self.samples = []
+        with open(self.label_file) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    filename = parts[0]
+                    class_id = int(parts[1])
+                    self.samples.append((filename, class_id))
+
+        # Load class names: class_id -> name
+        self.class_names = {}
+        if self.classmap_file.exists():
+            with open(self.classmap_file) as f:
+                for line in f:
+                    parts = line.strip().split(",")
+                    if len(parts) >= 2:
+                        name = parts[1].strip().lower().replace(" ", "_")
+                        self.class_names[int(parts[0])] = name
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict:
+        filename, class_id = self.samples[idx]
+        img_path = self.img_dir / filename
+
+        # Load image as grayscale
+        try:
+            with Image.open(img_path) as img:
+                # Convert to grayscale ('L')
+                img_gray = img.convert("L")
+                # Resize with bilinear interpolation
+                img_resized = img_gray.resize((self.target_size, self.target_size), Image.BILINEAR)
+                # Convert to numpy and normalize to [0, 1]
+                arr = np.array(img_resized, dtype=np.float32) / 255.0
+                # Convert to (1, H, W) tensor
+                tensor = torch.from_numpy(arr).unsqueeze(0)
+        except Exception as e:
+            # Fallback to zeros on loading error
+            tensor = torch.zeros((1, self.target_size, self.target_size), dtype=torch.float32)
+
+        class_name = self.class_names.get(class_id, str(class_id))
+
+        return {
+            "image": tensor,
+            "label": class_id,
+            "class_name": class_name,
+        }

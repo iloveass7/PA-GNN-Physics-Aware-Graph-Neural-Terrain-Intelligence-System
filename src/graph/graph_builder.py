@@ -176,8 +176,13 @@ def build_graph(
     H, W = image.shape
 
     # --- Step 1–3: Adaptive SLIC ---
+    # Drive tier/complexity/node-allocation from the DEM risk labels when available
+    # (training/val graphs). H_final is conservative at block scale (under-predicts),
+    # so it cannot cross tier thresholds; the DEM labels carry the true hazard signal.
+    # At inference (no labels) we fall back to H_final.
+    complexity_driver = risk_target if risk_target is not None else h_final
     labels, tier_map, slic_stats = adaptive_slic_segmentation(
-        h_physics, image,
+        complexity_driver, image,
         flat_threshold=flat_threshold,
         hazard_threshold=hazard_threshold,
         allocation_mode=allocation_mode,
@@ -384,6 +389,43 @@ def build_graph_from_npy(
         edge_mode=edge_mode,
         edge_scorer=edge_scorer,
     )
+
+
+class GraphBuilder:
+    """Wrapper class for build_graph to match pipeline.py instantiation."""
+    def __init__(self, k_neighbours: int = 5, flat_thresh: float = 0.25, hazard_thresh: float = 0.60):
+        self.k_neighbours = k_neighbours
+        self.flat_thresh = flat_thresh
+        self.hazard_thresh = hazard_thresh
+
+    def build_graph(
+        self,
+        image: np.ndarray,
+        h_physics: np.ndarray,
+        slope: np.ndarray,
+        roughness: np.ndarray,
+        disc: np.ndarray,
+        h_learned: np.ndarray,
+        h_final: np.ndarray,
+        alpha: np.ndarray,
+        risk_target: np.ndarray | None = None,
+        **kwargs
+    ) -> "PyGData":
+        return build_graph(
+            image=image,
+            h_physics=h_physics,
+            slope=slope,
+            roughness=roughness,
+            disc=disc,
+            h_learned=h_learned,
+            h_final=h_final,
+            alpha=alpha,
+            risk_target=risk_target,
+            K=self.k_neighbours,
+            flat_threshold=self.flat_thresh,
+            hazard_threshold=self.hazard_thresh,
+            **kwargs
+        )
 
 
 def validate_graph(data: "PyGData") -> dict[str, bool]:

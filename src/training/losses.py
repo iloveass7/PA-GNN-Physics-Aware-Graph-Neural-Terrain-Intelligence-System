@@ -35,7 +35,7 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------------
 
 HAZARD_THRESHOLD: float = 0.7    # above this → hazardous pixel
-HAZARD_WEIGHT:    float = 5.0    # BCE weight for hazardous pixels (increased from 3.0 for ~95:5 imbalance)
+HAZARD_WEIGHT:    float = 5.0    # BCE weight for hazardous pixels (calibrated for balanced splits)
 DICE_COEFF:       float = 0.5    # L = L_BCE + DICE_COEFF × L_Dice + TV_COEFF × L_TV
 TV_COEFF:         float = 0.1
 
