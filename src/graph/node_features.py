@@ -199,11 +199,11 @@ def extract_node_features(
             block_x = min(int(cx) // block_size, tier_map.shape[1] - 1)
             tiers[i] = tier_map[block_y, block_x]
         else:
-            # Fallback: assign based on mean H_physics
-            hp_val = features[i, 5]
-            if hp_val < 0.25:
+            # Fallback: assign based on mean H_final
+            hf_val = features[i, 7]
+            if hf_val < 0.25:
                 tiers[i] = 0
-            elif hp_val > 0.60:
+            elif hf_val > 0.60:
                 tiers[i] = 2
             else:
                 tiers[i] = 1

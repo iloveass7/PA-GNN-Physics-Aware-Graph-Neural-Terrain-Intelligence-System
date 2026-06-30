@@ -74,8 +74,8 @@ class PhysicsAwareGATv2Conv(MessagePassing):
         self.concat = concat
         self.dropout = dropout
         self.negative_slope = negative_slope
-        # Default features: S(2), R(3), D(4), H_physics(5), alpha(8), area(9)
-        self.physics_indices = physics_indices if physics_indices is not None else [2, 3, 4, 5, 8, 9]
+        # Default features: S(2), R(3) — blueprint §13 physics attention formula
+        self.physics_indices = physics_indices if physics_indices is not None else [2, 3]
 
         # --- Learnable parameters ---
 

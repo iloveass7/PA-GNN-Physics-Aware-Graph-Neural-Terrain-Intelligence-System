@@ -73,24 +73,24 @@ training:
   lr: 1.0e-3
   weight_decay: 5.0e-4
   max_epochs: 100
-  batch_size: 32               # 32 precomputed graphs per batch
+  batch_size: 4                # 4 precomputed graphs per batch
   grad_clip: 1.0
 
 # --- Early stopping ---
 early_stopping:
-  patience: 15
-  monitor: "val_MAE"
-  mode: "min"                  # Lower MAE = better
+  patience: 150
+  monitor: "val_AUC"
+  mode: "max"                  # Higher AUC = better
 
 # --- Checkpointing ---
 checkpoints:
   save_dir: "checkpoints"
   best_name: "gnn_best.pt"
-  periodic_every: 10
+  periodic_every: 5
 
 # --- DataLoader ---
 dataloader:
-  num_workers: 4
+  num_workers: 0
   pin_memory: true
   periodic_name: "gnn_epoch_{epoch:04d}.pt"
 

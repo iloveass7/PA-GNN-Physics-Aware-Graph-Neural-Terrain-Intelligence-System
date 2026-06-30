@@ -170,6 +170,33 @@ def save_loss_curves(history: list[dict]) -> None:
     log.info("Loss curves saved: %s", out)
 
 
+@torch.no_grad()
+def validate_per_location(model, loss_fn, device, batch_size, num_workers):
+    """Validate each val location separately, to expose 3-location val fragility.
+
+    Reuses build_dataset('val', ...) then filters its records by alias, so no
+    new dataset plumbing is needed. Logs per-location recall/precision/mIoU so
+    you can see whether the val locations agree (trustworthy) or diverge (noisy).
+    """
+    from src.data.label_generation import TilePair, build_dataset
+    full = build_dataset("val", SPLITS_DIR, TILES_DIR)
+    by_alias = {}
+    for rec in full.records:
+        by_alias.setdefault(rec["alias"], []).append(rec)
+
+    per_loc = {}
+    for alias, recs in by_alias.items():
+        ds = TilePair(recs, split="val")
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=False,
+                            num_workers=num_workers, pin_memory=True)
+        m = validate_one_epoch(model, loader, loss_fn, device)
+        per_loc[alias] = m
+        log.info("    [val:%-20s n=%4d] recall=%.3f prec=%.3f f1=%.3f mIoU=%.3f",
+                 alias, len(recs), m["hazard_recall"], m["hazard_precision"],
+                 m["hazard_f1"], m["mIoU"])
+    return per_loc
+
+
 # ---------------------------------------------------------------------------
 # Main training function
 # ---------------------------------------------------------------------------
@@ -261,7 +288,7 @@ def train_cnn(
 
     # --- Resume ---
     start_epoch  = 1
-    best_recall  = -1.0
+    best_miou    = -1.0
     no_improve   = 0
     history: list[dict] = []
 
@@ -273,10 +300,10 @@ def train_cnn(
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         start_epoch = ckpt["epoch"] + 1
-        best_recall = ckpt.get("best_recall", -1.0)
+        best_miou   = ckpt.get("best_miou", ckpt.get("best_recall", -1.0))
         no_improve  = ckpt.get("no_improve", 0)
         history     = ckpt.get("history", [])
-        log.info("Resumed from epoch %d, best_recall=%.4f", start_epoch - 1, best_recall)
+        log.info("Resumed from epoch %d, best_miou=%.4f", start_epoch - 1, best_miou)
 
     # --- Training loop ---
     log.info("=" * 60)
@@ -312,20 +339,24 @@ def train_cnn(
         history.append(row)
 
         # --- Best checkpoint ---
-        if val_recall > best_recall:
-            best_recall = val_recall
+        if val_miou > best_miou:
+            best_miou   = val_miou
             no_improve  = 0
             best_path   = CKPT_DIR / "cnn_best.pt"
             torch.save({
                 "model": model.state_dict(),
                 "epoch": epoch,
-                "val_hazard_recall": best_recall,
-                "val_mIoU": val_miou,
+                "val_mIoU": best_miou,
+                "val_hazard_recall": val_recall,
                 "init_mode": init_mode,
             }, str(best_path))
-            log.info("  ✓ New best checkpoint (recall=%.4f)", best_recall)
+            log.info("  ✓ New best checkpoint (mIoU=%.4f)", best_miou)
         else:
             no_improve += 1
+
+        if epoch % 5 == 0 or epoch == MAX_EPOCHS:
+            log.info("  Per-location val:")
+            validate_per_location(model, loss_fn, device, BATCH_SIZE, NUM_WORKERS)
 
         # --- Periodic checkpoint ---
         if epoch % PERIODIC_N == 0 or epoch == MAX_EPOCHS:
@@ -335,20 +366,21 @@ def train_cnn(
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "epoch": epoch,
-                "best_recall": best_recall,
+                "best_miou": best_miou,
                 "no_improve": no_improve,
                 "history": history,
             }, str(periodic_path))
-            # Also save as latest
-            torch.save({
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "epoch": epoch,
-                "best_recall": best_recall,
-                "no_improve": no_improve,
-                "history": history,
-            }, str(latest_ckpt))
+
+        # --- Save latest checkpoint every epoch to prevent losing progress ---
+        torch.save({
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "epoch": epoch,
+            "best_miou": best_miou,
+            "no_improve": no_improve,
+            "history": history,
+        }, str(latest_ckpt))
 
         # --- Prediction visualisation every 10 epochs ---
         if epoch % 10 == 0 or epoch == MAX_EPOCHS:
@@ -371,7 +403,7 @@ def train_cnn(
 
     log.info("=" * 60)
     log.info("Stage 3 training complete.")
-    log.info("  Best val_hazard_recall : %.4f", best_recall)
+    log.info("  Best val_mIoU          : %.4f", best_miou)
     log.info("  Best checkpoint        : %s", CKPT_DIR / "cnn_best.pt")
     log.info("  Used by Stage 4 (fusion) and Stage 5 (graph).")
     log.info("=" * 60)
